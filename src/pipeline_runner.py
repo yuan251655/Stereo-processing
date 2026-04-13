@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 from time import perf_counter
 
-from .file_store import IMAGE_SUFFIXES, copy_input_pair, ensure_runtime_dirs, write_metadata
+from .file_store import IMAGE_SUFFIXES, copy_input_pair, ensure_runtime_dirs
 from .stereo_api import StereoApiClient, StereoApiError
 
 
@@ -67,7 +67,11 @@ class PipelineRunner:
         model_key = str(self.config.get("model_selection", "fs")).strip().lower()
         input_dir = self.config["paths"]["input_dir"]
         output_dir = self.config["paths"]["output_dir"]
-        input_root, output_layout = ensure_runtime_dirs(input_dir, output_dir)
+        run_name = (
+            f"{'FoundationStereo' if model_key == 'fs' else 'S2M2StereoMatching'}_"
+            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        )
+        input_root, output_layout = ensure_runtime_dirs(input_dir, output_dir, run_name)
         preprocess_url = self.config["servers"]["preprocess"]
         raw_images = sorted(path for path in input_root.iterdir() if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES)
         if not raw_images:
@@ -144,10 +148,6 @@ class PipelineRunner:
                         remote_outputs.get("disp_vis"),
                         output_layout.disparity_vis_dir / f"{sample_name}_disp_vis.png",
                     ),
-                    "disp_png": stereo_client.save_remote_output(
-                        remote_outputs.get("disp_png"),
-                        output_layout.disparity_png_dir / f"{sample_name}_disp.png",
-                    ),
                     "disp_npy": stereo_client.save_remote_output(
                         remote_outputs.get("disp_npy"),
                         output_layout.disparity_npy_dir / f"{sample_name}_disp.npy",
@@ -168,29 +168,12 @@ class PipelineRunner:
                     else ""
                 )
 
-                conf_vis = remote_outputs.get("conf_vis")
-                conf_npy = remote_outputs.get("conf_npy")
-                saved_outputs["conf_vis"] = (
-                    stereo_client.save_remote_output(
-                        conf_vis,
-                        output_layout.confidence_vis_dir / f"{sample_name}_conf_vis.png",
-                    )
-                    if conf_vis
-                    else ""
-                )
-                saved_outputs["conf_npy"] = (
-                    stereo_client.save_remote_output(
-                        conf_npy,
-                        output_layout.confidence_npy_dir / f"{sample_name}_conf.npy",
-                    )
-                    if conf_npy
-                    else ""
-                )
-
                 elapsed = round(perf_counter() - start_time, 2)
                 metadata = {
                     "sample_name": sample_name,
                     "model": model_key,
+                    "run_name": run_name,
+                    "run_dir": str(output_layout.run_output),
                     "server_url": server_url,
                     "created_at": datetime.now().isoformat(timespec="seconds"),
                     "elapsed_seconds": elapsed,
@@ -199,13 +182,12 @@ class PipelineRunner:
                     "parameters": params,
                     "outputs": saved_outputs,
                 }
-                metadata_path = write_metadata(output_layout.metadata_dir, sample_name, metadata)
-                metadata["metadata_path"] = str(metadata_path)
+                metadata["metadata_path"] = ""
                 last_metadata = metadata
                 success_samples.append(sample_name)
                 self.status_callback("finished", sample_name)
                 self.logger(f"[{sample_name}] 处理完成，耗时 {elapsed} 秒")
-                self.logger(f"[{sample_name}] 结果清单：{metadata_path}")
+                self.logger(f"[{sample_name}] 输出目录：{output_layout.run_output}")
             except Exception as exc:  # noqa: BLE001
                 failure_messages.append(f"{sample_name}: {exc}")
                 self.logger(f"[{sample_name}] 处理失败：{exc}")
@@ -220,4 +202,5 @@ class PipelineRunner:
         if failure_messages:
             summary += f"，失败 {len(failure_messages)}"
             self.logger("失败样本：" + "；".join(failure_messages))
+        self.logger(f"本轮输出目录：{output_layout.run_output}")
         return TaskResult(True, summary, last_metadata)

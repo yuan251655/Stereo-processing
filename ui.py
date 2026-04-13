@@ -1157,15 +1157,11 @@ class StereoMainWindow(QMainWindow):
         else:
             self.result_preview.set_empty("缺少视差可视化", "当前记录没有可显示的视差可视化图。")
 
-        aux_path = outputs.get("conf_vis") or outputs.get("disp_png")
-        if aux_path and Path(aux_path).exists():
-            self.aux_preview.set_image(aux_path, aux_path)
+        pointcloud_path = outputs.get("pointcloud", "")
+        if pointcloud_path:
+            self.aux_preview.set_empty("点云文件已生成", pointcloud_path)
         else:
-            pointcloud_path = outputs.get("pointcloud", "")
-            if pointcloud_path:
-                self.aux_preview.set_empty("点云文件已生成", pointcloud_path)
-            else:
-                self.aux_preview.set_empty("暂无辅助结果", "当前记录没有置信图或点云。")
+            self.aux_preview.set_empty("暂无辅助结果", "当前记录没有点云文件。")
 
         self.output_files_list.clear()
         for key, value in outputs.items():
@@ -1178,6 +1174,8 @@ class StereoMainWindow(QMainWindow):
         pretty_record = {
             "sample_name": record.get("sample_name"),
             "model": record.get("model"),
+            "run_name": record.get("run_name"),
+            "run_dir": record.get("run_dir"),
             "created_at": record.get("created_at"),
             "elapsed_seconds": record.get("elapsed_seconds"),
             "server_url": record.get("server_url"),

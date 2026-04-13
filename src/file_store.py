@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -13,47 +14,40 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 @dataclass
 class OutputLayout:
     base_output: Path
+    run_output: Path
     cache_dir: Path
     disparity_vis_dir: Path
-    disparity_png_dir: Path
     disparity_npy_dir: Path
     depth_npy_dir: Path
     pointcloud_dir: Path
-    confidence_vis_dir: Path
-    confidence_npy_dir: Path
-    metadata_dir: Path
 
 
-def ensure_runtime_dirs(input_dir: str | Path, output_dir: str | Path) -> tuple[Path, OutputLayout]:
+def ensure_runtime_dirs(input_dir: str | Path, output_dir: str | Path, run_name: str) -> tuple[Path, OutputLayout]:
     input_path = Path(input_dir)
-    output_path = Path(output_dir)
+    output_root = Path(output_dir)
+    run_output = output_root / run_name
+    cache_dir = Path(tempfile.gettempdir()) / "stereo_processing_cache" / run_name
 
     for path in [
         input_path,
-        output_path,
-        output_path / "_cache",
-        output_path / "disparity_vis",
-        output_path / "disparity_png",
-        output_path / "disparity_npy",
-        output_path / "depth_npy",
-        output_path / "pointcloud",
-        output_path / "confidence_vis",
-        output_path / "confidence_npy",
-        output_path / "metadata",
+        output_root,
+        run_output,
+        cache_dir,
+        run_output / "disparity_vis",
+        run_output / "disparity_npy",
+        run_output / "depth_npy",
+        run_output / "pointcloud",
     ]:
         path.mkdir(parents=True, exist_ok=True)
 
     layout = OutputLayout(
-        base_output=output_path,
-        cache_dir=output_path / "_cache",
-        disparity_vis_dir=output_path / "disparity_vis",
-        disparity_png_dir=output_path / "disparity_png",
-        disparity_npy_dir=output_path / "disparity_npy",
-        depth_npy_dir=output_path / "depth_npy",
-        pointcloud_dir=output_path / "pointcloud",
-        confidence_vis_dir=output_path / "confidence_vis",
-        confidence_npy_dir=output_path / "confidence_npy",
-        metadata_dir=output_path / "metadata",
+        base_output=output_root,
+        run_output=run_output,
+        cache_dir=cache_dir,
+        disparity_vis_dir=run_output / "disparity_vis",
+        disparity_npy_dir=run_output / "disparity_npy",
+        depth_npy_dir=run_output / "depth_npy",
+        pointcloud_dir=run_output / "pointcloud",
     )
     return input_path, layout
 
@@ -95,16 +89,65 @@ def write_metadata(metadata_dir: Path, sample_name: str, payload: dict) -> Path:
 
 
 def list_saved_results(output_dir: str | Path) -> list[dict]:
-    metadata_dir = Path(output_dir) / "metadata"
-    if not metadata_dir.exists():
+    output_root = Path(output_dir)
+    if not output_root.exists():
         return []
 
     records = []
-    for json_path in sorted(metadata_dir.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
-        try:
-            payload = json.loads(json_path.read_text(encoding="utf-8"))
-        except Exception:
+    for run_dir in sorted((path for path in output_root.iterdir() if path.is_dir()), key=lambda item: item.stat().st_mtime, reverse=True):
+        disparity_vis_dir = run_dir / "disparity_vis"
+        disparity_npy_dir = run_dir / "disparity_npy"
+        depth_npy_dir = run_dir / "depth_npy"
+        pointcloud_dir = run_dir / "pointcloud"
+
+        if not any(path.exists() for path in [disparity_vis_dir, disparity_npy_dir, depth_npy_dir, pointcloud_dir]):
             continue
-        payload["metadata_path"] = str(json_path)
-        records.append(payload)
+
+        sample_map: dict[str, dict] = {}
+
+        def ensure_record(sample_name: str) -> dict:
+            if sample_name not in sample_map:
+                sample_map[sample_name] = {
+                    "sample_name": sample_name,
+                    "model": "s2m2" if run_dir.name.lower().startswith("s2m2") else "fs",
+                    "run_name": run_dir.name,
+                    "run_dir": str(run_dir),
+                    "created_at": datetime.fromtimestamp(run_dir.stat().st_mtime).isoformat(timespec="seconds"),
+                    "elapsed_seconds": None,
+                    "server_url": "",
+                    "parameters": {},
+                    "inputs": {},
+                    "outputs": {
+                        "disp_vis": "",
+                        "disp_npy": "",
+                        "depth_npy": "",
+                        "pointcloud": "",
+                    },
+                    "metadata_path": "",
+                }
+            return sample_map[sample_name]
+
+        if disparity_vis_dir.exists():
+            for path in disparity_vis_dir.glob("*_disp_vis.png"):
+                sample_name = path.stem.removesuffix("_disp_vis")
+                ensure_record(sample_name)["outputs"]["disp_vis"] = str(path)
+
+        if disparity_npy_dir.exists():
+            for path in disparity_npy_dir.glob("*_disp.npy"):
+                sample_name = path.stem.removesuffix("_disp")
+                ensure_record(sample_name)["outputs"]["disp_npy"] = str(path)
+
+        if depth_npy_dir.exists():
+            for path in depth_npy_dir.glob("*_depth.npy"):
+                sample_name = path.stem.removesuffix("_depth")
+                ensure_record(sample_name)["outputs"]["depth_npy"] = str(path)
+
+        if pointcloud_dir.exists():
+            for path in pointcloud_dir.glob("*.ply"):
+                sample_name = path.stem
+                ensure_record(sample_name)["outputs"]["pointcloud"] = str(path)
+
+        records.extend(sample_map.values())
+
+    records.sort(key=lambda item: item.get("created_at", ""), reverse=True)
     return records
