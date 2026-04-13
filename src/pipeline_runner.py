@@ -4,6 +4,7 @@ import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+import re
 from time import perf_counter
 
 from .file_store import IMAGE_SUFFIXES, copy_input_pair, ensure_runtime_dirs, write_metadata
@@ -32,6 +33,35 @@ class PipelineRunner:
             self.logger(f"处理失败：{exc}")
             self.logger(traceback.format_exc())
             return TaskResult(False, str(exc))
+
+    @staticmethod
+    def _build_camera_query_candidates(sample_name: str) -> list[str]:
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        def add(value: str) -> None:
+            text = str(value or "").strip()
+            if text and text not in seen:
+                seen.add(text)
+                candidates.append(text)
+
+        add(sample_name)
+        if "_" in sample_name:
+            add(sample_name.split("_")[0])
+
+        # 优先提取类似 ClearDCL00003 这样的“相机名+编号”前缀。
+        match = re.match(r"([A-Za-z][A-Za-z0-9]*\d+)", sample_name)
+        if match:
+            add(match.group(1))
+
+        # 去掉常见的日期时间尾巴：xxx_20260409_174455_948 -> xxx
+        trimmed = re.sub(r"_\d{8}(?:_\d{4,6})?(?:_\d+)?$", "", sample_name)
+        if trimmed != sample_name:
+            add(trimmed)
+            if "_" in trimmed:
+                add(trimmed.split("_")[0])
+
+        return candidates
 
     def _run_once(self) -> TaskResult:
         model_key = str(self.config.get("model_selection", "fs")).strip().lower()
@@ -71,12 +101,24 @@ class PipelineRunner:
                 self.logger(f"[{index}/{total}] 开始处理样本：{sample_name}")
                 self.status_callback("connecting", sample_name)
 
-                query_name = sample_name.split("_")[0] if "_" in sample_name else sample_name
-                try:
-                    params_text = preprocess_client.query_camera_params(query_name)
-                except StereoApiError:
-                    params_text = preprocess_client.query_camera_params(sample_name)
-                self.logger(f"[{sample_name}] 已匹配相机参数")
+                query_candidates = self._build_camera_query_candidates(sample_name)
+                params_text = ""
+                last_query_error = ""
+                for query_name in query_candidates:
+                    try:
+                        self.logger(f"[{sample_name}] 尝试匹配相机参数 Key: {query_name}")
+                        params_text = preprocess_client.query_camera_params(query_name)
+                        self.logger(f"[{sample_name}] 相机参数匹配成功 Key: {query_name}")
+                        break
+                    except StereoApiError as exc:
+                        last_query_error = str(exc)
+
+                if not params_text:
+                    tried = "、".join(query_candidates)
+                    raise StereoApiError(
+                        f"未找到相机参数。已尝试 Key: {tried}"
+                        + (f" | 最后一次返回: {last_query_error}" if last_query_error else "")
+                    )
 
                 left_image, right_image, intrinsic_text = preprocess_client.preprocess_image(
                     image_path,
