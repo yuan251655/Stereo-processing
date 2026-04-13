@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import requests
-from gradio_client import Client
+from gradio_client import Client, handle_file
 
 
 class StereoApiError(RuntimeError):
@@ -19,6 +19,9 @@ class StereoApiClient:
         self.server_url = server_url.rstrip("/")
         self.timeout = timeout
 
+    def probe(self) -> None:
+        Client(self.server_url)
+
     def get_status(self, model_key: str) -> tuple[str, str]:
         api_name = "/get_status" if model_key == "s2m2" else "/get_system_status"
         client = Client(self.server_url)
@@ -26,6 +29,37 @@ class StereoApiClient:
         if isinstance(result, tuple) and len(result) >= 2:
             return str(result[0]), str(result[1])
         raise StereoApiError("状态接口返回格式异常。")
+
+    def query_camera_params(self, sample_name: str) -> str:
+        client = Client(self.server_url)
+        result = client.predict(sample_name, api_name="/ui_query")
+        text = str(result or "").strip().strip('"').strip("'")
+        if not text or text.startswith("❌"):
+            raise StereoApiError(f"未找到相机参数：{sample_name}")
+        return text
+
+    def preprocess_image(
+        self,
+        image_path: str | Path,
+        params_text: str,
+        cache_dir: str | Path,
+        sample_name: str,
+    ) -> tuple[str, str, str]:
+        client = Client(self.server_url)
+        result = client.predict(handle_file(str(image_path)), params_text, api_name="/ui_preprocess_fs")
+        if not isinstance(result, (list, tuple)) or len(result) < 3:
+            raise StereoApiError("预处理接口返回格式异常。")
+
+        cache_path = Path(cache_dir)
+        cache_path.mkdir(parents=True, exist_ok=True)
+        left_local = self.save_remote_output(result[0], cache_path / f"{sample_name}_left_rect.png")
+        right_local = self.save_remote_output(result[1], cache_path / f"{sample_name}_right_rect.png")
+        new_k = str(result[2] or "").strip()
+        if not left_local or not right_local:
+            raise StereoApiError("预处理结果同步失败。")
+        if not new_k:
+            raise StereoApiError("预处理未返回可用内参与基线。")
+        return left_local, right_local, new_k
 
     def upload_file(self, file_path: str | Path) -> str:
         upload_url = f"{self.server_url}/gradio_api/upload"
@@ -165,4 +199,3 @@ class StereoApiClient:
         if isinstance(remote_value, str):
             return remote_value
         return ""
-

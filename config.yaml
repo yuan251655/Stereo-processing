@@ -2,6 +2,7 @@ paths:
   input_dir: E:/codex/projects/Stereo-processing/input
   output_dir: E:/codex/projects/Stereo-processing/output
 servers:
+  preprocess: http://192.168.30.237:8002
   fs: http://192.168.30.237:8000
   s2m2: http://192.168.30.237:8001
 model_selection: fs

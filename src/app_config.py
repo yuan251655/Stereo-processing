@@ -16,6 +16,7 @@ DEFAULT_CONFIG = {
         "output_dir": str(BASE_DIR / "output"),
     },
     "servers": {
+        "preprocess": "http://192.168.30.237:8002",
         "fs": "http://192.168.30.237:8000",
         "s2m2": "http://192.168.30.237:8001",
     },
@@ -79,4 +80,3 @@ def save_config(config_data: dict) -> None:
     merged = _merge_dict(DEFAULT_CONFIG, config_data or {})
     with CONFIG_PATH.open("w", encoding="utf-8") as file:
         yaml.safe_dump(merged, file, allow_unicode=True, sort_keys=False)
-

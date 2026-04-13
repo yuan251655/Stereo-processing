@@ -142,17 +142,16 @@ class AdaptiveConfigGrid(QWidget):
             self._grid.setRowStretch(row, 0)
 
         if compact:
-            order = ["source", "workspace", "model", "params", "action"]
+            order = ["workspace", "model", "params", "action"]
             for row, key in enumerate(order):
                 self._grid.addWidget(self._cards[key], row, 0)
             self._grid.setColumnStretch(0, 1)
             return
 
-        self._grid.addWidget(self._cards["source"], 0, 0, 1, 2)
-        self._grid.addWidget(self._cards["workspace"], 1, 0)
-        self._grid.addWidget(self._cards["model"], 1, 1)
-        self._grid.addWidget(self._cards["params"], 2, 0, 1, 2)
-        self._grid.addWidget(self._cards["action"], 3, 0, 1, 2)
+        self._grid.addWidget(self._cards["workspace"], 0, 0)
+        self._grid.addWidget(self._cards["model"], 0, 1)
+        self._grid.addWidget(self._cards["params"], 1, 0, 1, 2)
+        self._grid.addWidget(self._cards["action"], 2, 0, 1, 2)
         self._grid.setColumnStretch(0, 1)
         self._grid.setColumnStretch(1, 1)
 
@@ -301,7 +300,6 @@ class StereoMainWindow(QMainWindow):
 
         cards = {
             "workspace": self._build_workspace_card(),
-            "source": self._build_source_card(),
             "model": self._build_model_card(),
             "params": self._build_params_card(),
             "action": self._build_action_card(),
@@ -315,7 +313,7 @@ class StereoMainWindow(QMainWindow):
         return container
 
     def _build_workspace_card(self) -> QWidget:
-        card, layout = self._card_with_layout("01 工作区", "输入和输出目录固定职责，切换输出目录后会同步刷新右侧结果。")
+        card, layout = self._card_with_layout("01 工作区", "只需指定输入目录和输出目录。开始处理后会自动扫描输入目录中的原始图像，并批量生成结果。")
         self.input_dir_edit = QLineEdit()
         self.output_dir_edit = QLineEdit()
         self.input_dir_edit.setPlaceholderText("默认使用项目下的 input 目录")
@@ -326,55 +324,33 @@ class StereoMainWindow(QMainWindow):
         self._add_path_row(layout, "输出目录", self.output_dir_edit, self.select_output_dir)
         return card
 
-    def _build_source_card(self) -> QWidget:
-        card, layout = self._card_with_layout("02 样本输入", "先选左右图，再补充样本名和标定信息；运行时可自动备份原图。")
-        self.sample_name_edit = QLineEdit()
-        self.left_image_edit = QLineEdit()
-        self.right_image_edit = QLineEdit()
-        self.intrinsic_edit = QTextEdit()
-        self.intrinsic_edit.setObjectName("CodeInput")
-        self.intrinsic_edit.setMinimumHeight(92)
-        self.intrinsic_edit.setPlaceholderText("粘贴相机内参、基线或完整标定文本…")
-        self.intrinsic_edit.setAcceptRichText(False)
-        self.copy_input_checkbox = QCheckBox("运行时复制原始左右图到 input 目录")
-        self.sample_name_edit.setPlaceholderText("例如：sample_001")
-        self.left_image_edit.setPlaceholderText("选择左图文件")
-        self.right_image_edit.setPlaceholderText("选择右图文件")
-        self.sample_name_edit.setClearButtonEnabled(True)
-        self.left_image_edit.setClearButtonEnabled(True)
-        self.right_image_edit.setClearButtonEnabled(True)
-        self.left_image_edit.textChanged.connect(self.refresh_live_preview)
-        self.right_image_edit.textChanged.connect(self.refresh_live_preview)
-        self._add_form_row(layout, "样本名", self.sample_name_edit)
-        self._add_path_row(layout, "左图路径", self.left_image_edit, self.select_left_image)
-        self._add_path_row(layout, "右图路径", self.right_image_edit, self.select_right_image)
-        self._add_form_row(layout, "内参 / 基线", self.intrinsic_edit)
-        layout.addWidget(self.copy_input_checkbox)
-        return card
-
     def _build_model_card(self) -> QWidget:
-        card, layout = self._card_with_layout("03 模型与服务", "切换模型时只保留相关接口说明，减少干扰。")
+        card, layout = self._card_with_layout("02 模型与服务", "开始处理时会先调用预处理服务自动匹配参数并完成校正，再进入当前选中的深度模型。")
         self.model_combo = QComboBox()
         self.model_combo.addItem("Foundation Stereo", "fs")
         self.model_combo.addItem("S2M2 Stereo Matching", "s2m2")
         self.model_combo.currentIndexChanged.connect(self.on_model_changed)
+        self.preprocess_url_edit = QLineEdit()
         self.fs_url_edit = QLineEdit()
         self.s2m2_url_edit = QLineEdit()
+        self.preprocess_url_edit.setPlaceholderText("http://127.0.0.1:8002")
         self.fs_url_edit.setPlaceholderText("http://127.0.0.1:8000")
         self.s2m2_url_edit.setPlaceholderText("http://127.0.0.1:8001")
+        self.preprocess_url_edit.setClearButtonEnabled(True)
         self.fs_url_edit.setClearButtonEnabled(True)
         self.s2m2_url_edit.setClearButtonEnabled(True)
         self.service_status_label = QLabel("尚未检查服务")
         self.service_status_label.setObjectName("StatusNote")
         self.service_status_label.setWordWrap(True)
         self._add_form_row(layout, "当前模型", self.model_combo)
+        self._add_form_row(layout, "预处理服务地址", self.preprocess_url_edit)
         self._add_form_row(layout, "FS 服务地址", self.fs_url_edit)
         self._add_form_row(layout, "S2M2 服务地址", self.s2m2_url_edit)
         layout.addWidget(self.service_status_label)
         return card
 
     def _build_params_card(self) -> QWidget:
-        card, layout = self._card_with_layout("04 参数配置", "只展示当前模型需要的参数，避免整个左栏看起来像一张超长表单。")
+        card, layout = self._card_with_layout("03 参数配置", "只展示当前模型需要的参数，开始处理后会按输入目录中的样本批量执行。")
         self.params_stack = QStackedWidget()
         self.fs_param_widgets = {}
         self.s2m2_param_widgets = {}
@@ -448,7 +424,7 @@ class StereoMainWindow(QMainWindow):
         return page
 
     def _build_action_card(self) -> QWidget:
-        card, layout = self._card_with_layout("05 执行控制", "主操作只保留开始与停止，其他动作退居二级，整体阅读会轻很多。")
+        card, layout = self._card_with_layout("04 执行控制", "确认目录与模型配置后，点击开始即可批量处理输入目录中的全部样本。")
         summary_row = QHBoxLayout()
         summary_row.setSpacing(8)
         self.action_model_chip = QLabel("当前模型 -")
@@ -969,11 +945,7 @@ class StereoMainWindow(QMainWindow):
         config = self.config
         self.input_dir_edit.setText(config["paths"]["input_dir"])
         self.output_dir_edit.setText(config["paths"]["output_dir"])
-        self.sample_name_edit.setText(config["session"]["sample_name"])
-        self.left_image_edit.setText(config["session"]["left_image"])
-        self.right_image_edit.setText(config["session"]["right_image"])
-        self.intrinsic_edit.setPlainText(config["session"]["intrinsic_text"])
-        self.copy_input_checkbox.setChecked(bool(config["session"]["save_input_copy"]))
+        self.preprocess_url_edit.setText(config["servers"].get("preprocess", "http://192.168.30.237:8002"))
         self.fs_url_edit.setText(config["servers"]["fs"])
         self.s2m2_url_edit.setText(config["servers"]["s2m2"])
         model_key = config.get("model_selection", "fs")
@@ -1005,11 +977,7 @@ class StereoMainWindow(QMainWindow):
         config = load_config()
         config["paths"]["input_dir"] = self.input_dir_edit.text().strip()
         config["paths"]["output_dir"] = self.output_dir_edit.text().strip()
-        config["session"]["sample_name"] = self.sample_name_edit.text().strip()
-        config["session"]["left_image"] = self.left_image_edit.text().strip()
-        config["session"]["right_image"] = self.right_image_edit.text().strip()
-        config["session"]["intrinsic_text"] = self.intrinsic_edit.toPlainText().strip()
-        config["session"]["save_input_copy"] = self.copy_input_checkbox.isChecked()
+        config["servers"]["preprocess"] = self.preprocess_url_edit.text().strip()
         config["servers"]["fs"] = self.fs_url_edit.text().strip()
         config["servers"]["s2m2"] = self.s2m2_url_edit.text().strip()
         config["model_selection"] = self.model_combo.currentData()
@@ -1047,23 +1015,17 @@ class StereoMainWindow(QMainWindow):
         model_key = self.model_combo.currentData()
         self.params_stack.setCurrentIndex(0 if model_key == "fs" else 1)
         self.service_status_label.setText(
-            "当前接口：/get_system_status + /run_official_pipeline"
+            "当前流程：预处理服务 /ui_query + /ui_preprocess_fs，再调用 /get_system_status + /run_official_pipeline"
             if model_key == "fs"
-            else "当前接口：/get_status + /run_s2m2_pipeline"
+            else "当前流程：预处理服务 /ui_query + /ui_preprocess_fs，再调用 /get_status + /run_s2m2_pipeline"
         )
         self._sync_summary_chips()
 
     def refresh_live_preview(self) -> None:
-        left_path = self.left_image_edit.text().strip()
-        right_path = self.right_image_edit.text().strip()
-        if Path(left_path).exists():
-            self.left_preview.set_image(left_path, left_path)
-        else:
-            self.left_preview.set_empty("左图待选择", "请选择一张左图。")
-        if Path(right_path).exists():
-            self.right_preview.set_image(right_path, right_path)
-        else:
-            self.right_preview.set_empty("右图待选择", "请选择一张右图。")
+        self.left_preview.set_empty("等待处理结果", "批量处理完成后，这里会显示当前记录的左目校正结果。")
+        self.right_preview.set_empty("等待处理结果", "批量处理完成后，这里会显示当前记录的右目校正结果。")
+        self.result_preview.set_empty("等待处理结果", "处理完成后，这里会显示视差可视化结果。")
+        self.aux_preview.set_empty("等待处理结果", "这里会显示辅助结果或点云文件提示。")
 
     def start_processing(self) -> None:
         try:
@@ -1077,6 +1039,15 @@ class StereoMainWindow(QMainWindow):
             QMessageBox.information(self, "任务进行中", "当前已有任务在运行，请先等待完成。")
             return
 
+        input_dir = Path(self.input_dir_edit.text().strip())
+        if not input_dir.exists():
+            QMessageBox.warning(self, "无法开始", "输入目录不存在。")
+            return
+        image_count = len([path for path in input_dir.iterdir() if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}])
+        if image_count == 0:
+            QMessageBox.warning(self, "无法开始", "输入目录中没有可处理的原始图像。")
+            return
+
         self.worker = PipelineThread(self.config, self)
         self.worker.log_signal.connect(self.append_log)
         self.worker.stage_signal.connect(self.update_stage)
@@ -1084,10 +1055,11 @@ class StereoMainWindow(QMainWindow):
         self.worker.completed_signal.connect(self.on_processing_finished)
 
         self.log_output.clear()
-        self.append_log("开始处理任务...")
+        self.append_log("开始批量处理任务...")
+        self.append_log(f"输入目录样本数：{image_count}")
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(0)
-        self.progress_hint.setText("模型处理中...")
+        self.progress_hint.setText("批量处理中...")
         self.run_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self._set_status("running", "运行中", "正在调用模型服务")
@@ -1229,19 +1201,22 @@ class StereoMainWindow(QMainWindow):
             return
 
         model_key = config["model_selection"]
+        preprocess_url = config["servers"]["preprocess"]
         server_url = config["servers"][model_key]
-        self.service_status_label.setText("正在检查服务，请稍候...")
+        self.service_status_label.setText("正在检查预处理与深度服务，请稍候...")
         QApplication.processEvents()
 
         try:
+            StereoApiClient(preprocess_url, timeout=10).probe()
             client = StereoApiClient(server_url, timeout=10)
             status_text, timer_text = client.get_status(model_key)
-            self.service_status_label.setText(f"服务正常：{status_text} | {timer_text}")
-            self.append_log(f"服务检查成功：{server_url}")
+            self.service_status_label.setText(f"服务正常：预处理已连接 | 深度服务 {status_text} | {timer_text}")
+            self.append_log(f"预处理服务检查成功：{preprocess_url}")
+            self.append_log(f"深度服务检查成功：{server_url}")
             self._set_status("ready", "就绪", "服务检查成功")
         except Exception as exc:  # noqa: BLE001
             self.service_status_label.setText(f"服务检查失败：{exc}")
-            self.append_log(f"服务检查失败：{server_url} -> {exc}")
+            self.append_log(f"服务检查失败：{preprocess_url} / {server_url} -> {exc}")
             self._set_status("error", "异常", "服务检查失败")
 
     def select_input_dir(self) -> None:
@@ -1257,23 +1232,6 @@ class StereoMainWindow(QMainWindow):
             self.output_dir_edit.setText(folder)
             self._sync_summary_chips()
             self.refresh_results()
-
-    def select_left_image(self) -> None:
-        file_path, _ = QFileDialog.getOpenFileName(self, "选择左图", str(BASE_DIR), "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)")
-        if file_path:
-            self.left_image_edit.setText(file_path)
-            self._autofill_sample_name(file_path)
-
-    def select_right_image(self) -> None:
-        file_path, _ = QFileDialog.getOpenFileName(self, "选择右图", str(BASE_DIR), "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)")
-        if file_path:
-            self.right_image_edit.setText(file_path)
-            if not self.sample_name_edit.text().strip():
-                self._autofill_sample_name(file_path)
-
-    def _autofill_sample_name(self, file_path: str) -> None:
-        if not self.sample_name_edit.text().strip():
-            self.sample_name_edit.setText(Path(file_path).stem)
 
     def open_output_dir(self) -> None:
         self.open_in_system(Path(self.output_dir_edit.text().strip()))

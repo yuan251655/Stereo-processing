@@ -58,7 +58,13 @@ def ensure_runtime_dirs(input_dir: str | Path, output_dir: str | Path) -> tuple[
     return input_path, layout
 
 
-def copy_input_pair(input_dir: str | Path, sample_name: str, left_image: str | Path, right_image: str | Path) -> dict:
+def copy_input_pair(
+    input_dir: str | Path,
+    sample_name: str,
+    left_image: str | Path,
+    right_image: str | Path,
+    source_image: str | Path | None = None,
+) -> dict:
     input_path = Path(input_dir)
     left_src = Path(left_image)
     right_src = Path(right_image)
@@ -76,6 +82,8 @@ def copy_input_pair(input_dir: str | Path, sample_name: str, left_image: str | P
         "right_image": str(right_target),
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
+    if source_image:
+        payload["source_image"] = str(source_image)
     pair_manifest.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return payload
 
@@ -100,4 +108,3 @@ def list_saved_results(output_dir: str | Path) -> list[dict]:
         payload["metadata_path"] = str(json_path)
         records.append(payload)
     return records
-
