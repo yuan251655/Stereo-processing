@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+input/left/*
+input/right/*
+input/pairs/*
+output/*

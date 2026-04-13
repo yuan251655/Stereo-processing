@@ -1,0 +1,33 @@
+paths:
+  input_dir: E:/codex/projects/Stereo-processing/input
+  output_dir: E:/codex/projects/Stereo-processing/output
+servers:
+  fs: http://192.168.30.237:8000
+  s2m2: http://192.168.30.237:8001
+model_selection: fs
+session:
+  sample_name: sample_001
+  left_image: ""
+  right_image: ""
+  intrinsic_text: |-
+    754.66 0.0 489.37 0.0 754.66 265.16 0.0 0.0 1.0
+    0.063
+  save_input_copy: true
+fs_params:
+  scale: 1.0
+  iters: 32
+  hiera: false
+  get_pc: true
+  z_far: 10.0
+  rm_inv: false
+  denoise: false
+  d_nb: 30
+  d_rad: 0.03
+s2m2_params:
+  model_choice: X-Large (XL)
+  get_pc: true
+  z_far: 10.0
+  conf_thresh: 0.0
+  denoise: false
+  d_nb: 30
+  d_rad: 0.03
