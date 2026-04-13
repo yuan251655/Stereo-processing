@@ -536,8 +536,10 @@ class StereoMainWindow(QMainWindow):
         self.result_preview = PreviewPane("视差可视化")
         self.aux_preview = PreviewPane("辅助结果")
         self.preview_tabs = QTabWidget()
-        self.preview_tabs.setDocumentMode(True)
+        self.preview_tabs.setDocumentMode(False)
         self.preview_tabs.setMinimumHeight(240)
+        self.preview_tabs.tabBar().setDrawBase(False)
+        self.preview_tabs.tabBar().setExpanding(False)
         self.preview_tabs.addTab(self.left_preview, "左图")
         self.preview_tabs.addTab(self.right_preview, "右图")
         self.preview_tabs.addTab(self.result_preview, "视差结果")
@@ -773,30 +775,47 @@ class StereoMainWindow(QMainWindow):
                 font-family: "Consolas";
                 font-size: 10pt;
             }
+            QTabWidget {
+                background: transparent;
+            }
             QTabWidget::pane {
-                background: #fffdfa;
+                background: #f9fbfc;
                 border: 1px solid #d8e0e7;
-                border-radius: 16px;
+                border-radius: 18px;
                 top: -1px;
+                margin-top: -1px;
+                padding: 10px 10px 8px 10px;
+            }
+            QTabBar {
+                background: transparent;
+                left: 6px;
             }
             QTabBar::tab {
-                background: #edf3f6;
+                background: #eef3f6;
                 color: #4f6474;
                 border: 1px solid #d8e0e7;
-                border-bottom-color: #d8e0e7;
-                border-top-left-radius: 10px;
-                border-top-right-radius: 10px;
-                padding: 8px 14px;
-                margin-right: 6px;
+                border-bottom: none;
+                border-top-left-radius: 12px;
+                border-top-right-radius: 12px;
+                padding: 9px 16px 10px 16px;
+                margin-right: 4px;
+                margin-bottom: 0px;
                 font-weight: 700;
             }
             QTabBar::tab:selected {
-                background: #fffdfa;
+                background: #f9fbfc;
                 color: #203142;
-                border-bottom-color: #fffdfa;
+                border-color: #d8e0e7;
+                margin-bottom: -1px;
+                padding-bottom: 11px;
+                z-index: 2;
+            }
+            QTabBar::tab:!selected {
+                margin-top: 4px;
             }
             QTabBar::tab:hover:!selected {
-                background: #e4edf2;
+                background: #e6edf1;
+                border-color: #cad7df;
             }
             QPushButton {
                 background: #e9eef1;
