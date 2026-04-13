@@ -507,16 +507,13 @@ class StereoMainWindow(QMainWindow):
         layout.addWidget(self.progress_hint)
         return card
 
-    def _build_center_panel(self) -> QWidget:
-        splitter = QSplitter(Qt.Vertical)
-        splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(10)
-
+    def _build_preview_card(self) -> QWidget:
         preview_card = QFrame()
         preview_card.setObjectName("Card")
         preview_layout = QVBoxLayout(preview_card)
         preview_layout.setContentsMargins(18, 18, 18, 18)
         preview_layout.setSpacing(14)
+        preview_card.setMinimumHeight(360)
         header_row = QHBoxLayout()
         header_row.setSpacing(12)
         header_text = QVBoxLayout()
@@ -540,17 +537,21 @@ class StereoMainWindow(QMainWindow):
         self.aux_preview = PreviewPane("辅助结果")
         self.preview_tabs = QTabWidget()
         self.preview_tabs.setDocumentMode(True)
+        self.preview_tabs.setMinimumHeight(240)
         self.preview_tabs.addTab(self.left_preview, "左图")
         self.preview_tabs.addTab(self.right_preview, "右图")
         self.preview_tabs.addTab(self.result_preview, "视差结果")
         self.preview_tabs.addTab(self.aux_preview, "辅助结果")
         preview_layout.addWidget(self.preview_tabs, stretch=1)
+        return preview_card
 
+    def _build_log_card(self) -> QWidget:
         log_card = QFrame()
         log_card.setObjectName("Card")
         log_layout = QVBoxLayout(log_card)
         log_layout.setContentsMargins(18, 18, 18, 18)
         log_layout.setSpacing(12)
+        log_card.setMinimumHeight(250)
         log_title = QLabel("运行日志")
         log_title.setObjectName("CardTitle")
         log_subtitle = QLabel("保留服务连接、推理进度和结果写入信息，排查问题时更顺手。")
@@ -564,44 +565,44 @@ class StereoMainWindow(QMainWindow):
         log_layout.addWidget(log_title)
         log_layout.addWidget(log_subtitle)
         log_layout.addWidget(self.log_output, stretch=1)
-
-        splitter.addWidget(preview_card)
-        splitter.addWidget(log_card)
-        splitter.setSizes([670, 250])
-        return splitter
+        return log_card
 
     def _build_side_panel(self) -> QWidget:
-        splitter = QSplitter(Qt.Vertical)
-        splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(10)
-        splitter.addWidget(self._build_center_panel())
-        splitter.addWidget(self._build_right_panel())
-        splitter.setSizes([580, 360])
-        return splitter
-
-    def _build_right_panel(self) -> QWidget:
         container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        outer = QVBoxLayout(container)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-        splitter = QSplitter(Qt.Vertical)
-        splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(10)
-
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 8, 0)
+        layout.setSpacing(16)
+        layout.addWidget(self._build_preview_card())
+        layout.addWidget(self._build_log_card())
         history_card, history_layout = self._card_with_layout("结果记录", "按最近处理时间倒序展示，选中后会联动预览、文件和摘要。")
+        history_card.setMinimumHeight(180)
         self.results_list = QListWidget()
         self.results_list.setSpacing(6)
+        self.results_list.setMinimumHeight(110)
         self.results_list.itemSelectionChanged.connect(self.on_result_selected)
         history_layout.addWidget(self.results_list)
+        layout.addWidget(history_card)
 
         file_card, file_layout = self._card_with_layout("输出文件", "双击条目即可打开所在目录，适合快速定位产物。")
+        file_card.setMinimumHeight(170)
         self.output_files_list = QListWidget()
         self.output_files_list.setSpacing(6)
+        self.output_files_list.setMinimumHeight(96)
         self.output_files_list.itemDoubleClicked.connect(self.open_selected_artifact)
         file_layout.addWidget(self.output_files_list)
+        layout.addWidget(file_card)
 
         meta_card, meta_layout = self._card_with_layout("结果摘要", "记录模型、耗时、参数与路径，便于回查。")
+        meta_card.setMinimumHeight(260)
         self.metadata_title_label = QLabel("当前未选中结果")
         self.metadata_title_label.setObjectName("InlineLabel")
         self.metadata_view = QTextEdit()
@@ -611,12 +612,11 @@ class StereoMainWindow(QMainWindow):
         self.metadata_view.setMinimumHeight(220)
         meta_layout.addWidget(self.metadata_title_label)
         meta_layout.addWidget(self.metadata_view)
+        layout.addWidget(meta_card)
+        layout.addStretch(1)
 
-        splitter.addWidget(history_card)
-        splitter.addWidget(file_card)
-        splitter.addWidget(meta_card)
-        splitter.setSizes([290, 230, 300])
-        layout.addWidget(splitter, stretch=1)
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
         return container
 
     def _card_with_layout(self, title: str, subtitle: str) -> tuple[QWidget, QVBoxLayout]:
