@@ -32,9 +32,11 @@ try:
         QScrollArea,
         QSplitter,
         QStackedWidget,
+        QTabWidget,
         QTextEdit,
         QVBoxLayout,
         QWidget,
+        QSizePolicy,
     )
 except ImportError:
     print("缺少 PyQt5，请先安装：pip install PyQt5")
@@ -48,22 +50,25 @@ class PreviewPane(QFrame):
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
         self._pixmap = None
+        self._caption_text = ""
         self.setObjectName("Card")
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
         self.title_label = QLabel(title)
-        self.title_label.setObjectName("CardTitle")
+        self.title_label.setObjectName("InlineLabel")
         self.image_label = QLabel()
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setMinimumHeight(220)
         self.image_label.setObjectName("PreviewSurface")
         self.image_label.setWordWrap(True)
         self.caption_label = QLabel("等待内容")
-        self.caption_label.setObjectName("HintText")
-        self.caption_label.setWordWrap(True)
+        self.caption_label.setObjectName("PathCaption")
+        self.caption_label.setWordWrap(False)
+        self.caption_label.setMinimumHeight(18)
 
         layout.addWidget(self.title_label)
         layout.addWidget(self.image_label, stretch=1)
@@ -74,7 +79,8 @@ class PreviewPane(QFrame):
         self._pixmap = None
         self.image_label.setPixmap(QPixmap())
         self.image_label.setText(title)
-        self.caption_label.setText(detail)
+        self._caption_text = detail
+        self._refresh_caption()
 
     def set_image(self, image_path: str, detail: str = "") -> None:
         pixmap = QPixmap(image_path)
@@ -82,18 +88,73 @@ class PreviewPane(QFrame):
             self.set_empty("无法加载预览", image_path)
             return
         self._pixmap = pixmap
-        self.caption_label.setText(detail or image_path)
+        self._caption_text = detail or image_path
+        self._refresh_caption()
         self._refresh_pixmap()
 
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
         self._refresh_pixmap()
+        self._refresh_caption()
 
     def _refresh_pixmap(self) -> None:
         if self._pixmap is None:
             return
         scaled = self._pixmap.scaled(self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.image_label.setPixmap(scaled)
+
+    def _refresh_caption(self) -> None:
+        if not self._caption_text:
+            self.caption_label.clear()
+            return
+        width = max(self.caption_label.width() - 6, 120)
+        text = self.caption_label.fontMetrics().elidedText(self._caption_text, Qt.ElideMiddle, width)
+        self.caption_label.setText(text)
+
+class AdaptiveConfigGrid(QWidget):
+    def __init__(self, cards: dict[str, QWidget], parent=None):
+        super().__init__(parent)
+        self._cards = cards
+        self._compact = None
+        self._grid = QGridLayout(self)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setHorizontalSpacing(16)
+        self._grid.setVerticalSpacing(16)
+        self._apply_layout(False)
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        compact = self.width() < 900
+        if compact != self._compact:
+            self._apply_layout(compact)
+
+    def _apply_layout(self, compact: bool) -> None:
+        self._compact = compact
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                self._grid.removeWidget(widget)
+
+        for column in range(2):
+            self._grid.setColumnStretch(column, 0)
+        for row in range(5):
+            self._grid.setRowStretch(row, 0)
+
+        if compact:
+            order = ["source", "workspace", "model", "params", "action"]
+            for row, key in enumerate(order):
+                self._grid.addWidget(self._cards[key], row, 0)
+            self._grid.setColumnStretch(0, 1)
+            return
+
+        self._grid.addWidget(self._cards["source"], 0, 0, 1, 2)
+        self._grid.addWidget(self._cards["workspace"], 1, 0)
+        self._grid.addWidget(self._cards["model"], 1, 1)
+        self._grid.addWidget(self._cards["params"], 2, 0, 1, 2)
+        self._grid.addWidget(self._cards["action"], 3, 0, 1, 2)
+        self._grid.setColumnStretch(0, 1)
+        self._grid.setColumnStretch(1, 1)
 
 
 class PipelineThread(QThread):
@@ -130,60 +191,94 @@ class StereoMainWindow(QMainWindow):
         self.worker = None
         self.result_records = []
         self.current_record = None
+        self._compact_window = None
 
         self.setWindowTitle("Stereo Processing Workbench")
-        self.resize(1680, 980)
-        self.setMinimumSize(1360, 820)
-        self.setFont(QFont("Microsoft YaHei UI", 10))
+        self.resize(1560, 960)
+        self.setMinimumSize(980, 720)
+        self.setFont(QFont("Microsoft YaHei UI", 11))
 
         self._build_ui()
         self._apply_styles()
         self.load_config_to_widgets()
         self.refresh_results()
         self.refresh_live_preview()
+        self._set_status("ready", "就绪", "等待开始")
 
     def _build_ui(self) -> None:
         root = QWidget()
         root_layout = QVBoxLayout(root)
         root_layout.setContentsMargins(18, 18, 18, 18)
-        root_layout.setSpacing(14)
+        root_layout.setSpacing(16)
 
         root_layout.addWidget(self._build_header())
 
-        main_splitter = QSplitter(Qt.Horizontal)
-        main_splitter.addWidget(self._build_left_panel())
-        main_splitter.addWidget(self._build_center_panel())
-        main_splitter.addWidget(self._build_right_panel())
-        main_splitter.setSizes([420, 820, 360])
-        root_layout.addWidget(main_splitter, stretch=1)
+        self.main_splitter = QSplitter(Qt.Horizontal)
+        self.main_splitter.setChildrenCollapsible(False)
+        self.main_splitter.setHandleWidth(10)
+
+        left_panel = self._build_left_panel()
+        side_panel = self._build_side_panel()
+        left_panel.setMinimumWidth(560)
+        side_panel.setMinimumWidth(380)
+
+        self.main_splitter.addWidget(left_panel)
+        self.main_splitter.addWidget(side_panel)
+        self.main_splitter.setStretchFactor(0, 1)
+        self.main_splitter.setStretchFactor(1, 0)
+        self.main_splitter.setSizes([940, 620])
+        root_layout.addWidget(self.main_splitter, stretch=1)
         self.setCentralWidget(root)
+        self._update_responsive_layout(force=True)
 
     def _build_header(self) -> QWidget:
         card = QFrame()
-        card.setObjectName("HeroCard")
+        card.setObjectName("ToolbarCard")
         layout = QHBoxLayout(card)
-        layout.setContentsMargins(22, 18, 22, 18)
+        layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(18)
 
         text_column = QVBoxLayout()
         text_column.setSpacing(4)
+        eyebrow = QLabel("STEREO PROCESSING")
+        eyebrow.setObjectName("ToolbarEyebrow")
         title = QLabel("Stereo Processing Workbench")
-        title.setObjectName("HeroTitle")
-        subtitle = QLabel("聚焦双目视差、深度与点云产出，不再包含苗高、分割或 YOLO 相关流程。")
-        subtitle.setObjectName("HeroSubtitle")
+        title.setObjectName("ToolbarTitle")
+        subtitle = QLabel("核心配置放在主工作区，预览、日志和结果作为辅助区域，整体更适合长时间处理与调参。")
+        subtitle.setObjectName("ToolbarSubtitle")
         subtitle.setWordWrap(True)
+        text_column.addWidget(eyebrow)
         text_column.addWidget(title)
         text_column.addWidget(subtitle)
 
         badge_column = QVBoxLayout()
-        badge_column.setSpacing(8)
+        badge_column.setSpacing(6)
         badge_column.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        status_row = QHBoxLayout()
+        status_row.setSpacing(8)
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_label = QLabel("当前状态")
+        status_label.setObjectName("StatusLabel")
         self.status_chip = QLabel("就绪")
         self.status_chip.setObjectName("StatusChip")
         self.status_value = QLabel("等待开始")
         self.status_value.setObjectName("StatusValue")
-        badge_column.addWidget(self.status_chip, alignment=Qt.AlignRight)
+        self.status_value.setWordWrap(True)
+        self.status_value.setMinimumWidth(0)
+        metric_row = QHBoxLayout()
+        metric_row.setSpacing(8)
+        metric_row.setContentsMargins(0, 0, 0, 0)
+        self.model_summary_chip = QLabel("模型 -")
+        self.model_summary_chip.setObjectName("MetricPill")
+        self.result_count_chip = QLabel("记录 0")
+        self.result_count_chip.setObjectName("MetricPill")
+        status_row.addWidget(status_label)
+        status_row.addWidget(self.status_chip)
+        metric_row.addWidget(self.model_summary_chip)
+        metric_row.addWidget(self.result_count_chip)
+        badge_column.addLayout(status_row)
         badge_column.addWidget(self.status_value, alignment=Qt.AlignRight)
+        badge_column.addLayout(metric_row)
 
         layout.addLayout(text_column, stretch=1)
         layout.addLayout(badge_column)
@@ -193,19 +288,26 @@ class StereoMainWindow(QMainWindow):
         container = QWidget()
         outer = QVBoxLayout(container)
         outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         content = QWidget()
         layout = QVBoxLayout(content)
         layout.setContentsMargins(0, 0, 8, 0)
-        layout.setSpacing(14)
-        layout.addWidget(self._build_workspace_card())
-        layout.addWidget(self._build_source_card())
-        layout.addWidget(self._build_model_card())
-        layout.addWidget(self._build_params_card())
-        layout.addWidget(self._build_action_card())
+        layout.setSpacing(16)
+
+        cards = {
+            "workspace": self._build_workspace_card(),
+            "source": self._build_source_card(),
+            "model": self._build_model_card(),
+            "params": self._build_params_card(),
+            "action": self._build_action_card(),
+        }
+        self.config_grid = AdaptiveConfigGrid(cards)
+        layout.addWidget(self.config_grid)
         layout.addStretch(1)
 
         scroll.setWidget(content)
@@ -213,21 +315,34 @@ class StereoMainWindow(QMainWindow):
         return container
 
     def _build_workspace_card(self) -> QWidget:
-        card, layout = self._card_with_layout("工作区与目录", "固定 input / output 目录职责，结果按类型自动分类。")
+        card, layout = self._card_with_layout("01 工作区", "输入和输出目录固定职责，切换输出目录后会同步刷新右侧结果。")
         self.input_dir_edit = QLineEdit()
         self.output_dir_edit = QLineEdit()
+        self.input_dir_edit.setPlaceholderText("默认使用项目下的 input 目录")
+        self.output_dir_edit.setPlaceholderText("默认使用项目下的 output 目录")
+        self.input_dir_edit.setClearButtonEnabled(True)
+        self.output_dir_edit.setClearButtonEnabled(True)
         self._add_path_row(layout, "输入目录", self.input_dir_edit, self.select_input_dir)
         self._add_path_row(layout, "输出目录", self.output_dir_edit, self.select_output_dir)
         return card
 
     def _build_source_card(self) -> QWidget:
-        card, layout = self._card_with_layout("当前样本", "选择本次处理的左右图像，并写入 input 目录备份。")
+        card, layout = self._card_with_layout("02 样本输入", "先选左右图，再补充样本名和标定信息；运行时可自动备份原图。")
         self.sample_name_edit = QLineEdit()
         self.left_image_edit = QLineEdit()
         self.right_image_edit = QLineEdit()
         self.intrinsic_edit = QTextEdit()
+        self.intrinsic_edit.setObjectName("CodeInput")
         self.intrinsic_edit.setMinimumHeight(92)
+        self.intrinsic_edit.setPlaceholderText("粘贴相机内参、基线或完整标定文本…")
+        self.intrinsic_edit.setAcceptRichText(False)
         self.copy_input_checkbox = QCheckBox("运行时复制原始左右图到 input 目录")
+        self.sample_name_edit.setPlaceholderText("例如：sample_001")
+        self.left_image_edit.setPlaceholderText("选择左图文件")
+        self.right_image_edit.setPlaceholderText("选择右图文件")
+        self.sample_name_edit.setClearButtonEnabled(True)
+        self.left_image_edit.setClearButtonEnabled(True)
+        self.right_image_edit.setClearButtonEnabled(True)
         self.left_image_edit.textChanged.connect(self.refresh_live_preview)
         self.right_image_edit.textChanged.connect(self.refresh_live_preview)
         self._add_form_row(layout, "样本名", self.sample_name_edit)
@@ -238,15 +353,19 @@ class StereoMainWindow(QMainWindow):
         return card
 
     def _build_model_card(self) -> QWidget:
-        card, layout = self._card_with_layout("模型与服务", "支持 FS 与 S2M2 两套接口，状态检查走你提供的官方 API。")
+        card, layout = self._card_with_layout("03 模型与服务", "切换模型时只保留相关接口说明，减少干扰。")
         self.model_combo = QComboBox()
         self.model_combo.addItem("Foundation Stereo", "fs")
         self.model_combo.addItem("S2M2 Stereo Matching", "s2m2")
         self.model_combo.currentIndexChanged.connect(self.on_model_changed)
         self.fs_url_edit = QLineEdit()
         self.s2m2_url_edit = QLineEdit()
+        self.fs_url_edit.setPlaceholderText("http://127.0.0.1:8000")
+        self.s2m2_url_edit.setPlaceholderText("http://127.0.0.1:8001")
+        self.fs_url_edit.setClearButtonEnabled(True)
+        self.s2m2_url_edit.setClearButtonEnabled(True)
         self.service_status_label = QLabel("尚未检查服务")
-        self.service_status_label.setObjectName("HintText")
+        self.service_status_label.setObjectName("StatusNote")
         self.service_status_label.setWordWrap(True)
         self._add_form_row(layout, "当前模型", self.model_combo)
         self._add_form_row(layout, "FS 服务地址", self.fs_url_edit)
@@ -255,7 +374,7 @@ class StereoMainWindow(QMainWindow):
         return card
 
     def _build_params_card(self) -> QWidget:
-        card, layout = self._card_with_layout("参数配置", "按模型切换对应参数，尽量保持可读和直观。")
+        card, layout = self._card_with_layout("04 参数配置", "只展示当前模型需要的参数，避免整个左栏看起来像一张超长表单。")
         self.params_stack = QStackedWidget()
         self.fs_param_widgets = {}
         self.s2m2_param_widgets = {}
@@ -268,17 +387,22 @@ class StereoMainWindow(QMainWindow):
         page = QWidget()
         layout = QGridLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setHorizontalSpacing(10)
-        layout.setVerticalSpacing(10)
+        layout.setHorizontalSpacing(12)
+        layout.setVerticalSpacing(12)
+        layout.setColumnStretch(1, 1)
         for key in ["scale", "iters", "z_far", "d_nb", "d_rad"]:
             self.fs_param_widgets[key] = QLineEdit()
+            self.fs_param_widgets[key].setAlignment(Qt.AlignRight)
         self.fs_param_widgets["hiera"] = QCheckBox("开启分层推理")
         self.fs_param_widgets["get_pc"] = QCheckBox("生成点云 .ply")
         self.fs_param_widgets["rm_inv"] = QCheckBox("移除不可见点")
         self.fs_param_widgets["denoise"] = QCheckBox("点云去噪")
         rows = [("缩放比例", "scale"), ("迭代次数", "iters"), ("Z-Far", "z_far"), ("去噪邻域点数", "d_nb"), ("去噪半径", "d_rad")]
         for row, (label_text, key) in enumerate(rows):
-            layout.addWidget(QLabel(label_text), row, 0)
+            label = QLabel(label_text)
+            label.setObjectName("InlineLabel")
+            self.fs_param_widgets[key].setPlaceholderText({"scale": "1.0", "iters": "32", "z_far": "10.0", "d_nb": "30", "d_rad": "0.03"}[key])
+            layout.addWidget(label, row, 0)
             layout.addWidget(self.fs_param_widgets[key], row, 1)
         row = len(rows)
         for offset, key in enumerate(["hiera", "get_pc", "rm_inv", "denoise"]):
@@ -289,8 +413,9 @@ class StereoMainWindow(QMainWindow):
         page = QWidget()
         layout = QGridLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setHorizontalSpacing(10)
-        layout.setVerticalSpacing(10)
+        layout.setHorizontalSpacing(12)
+        layout.setVerticalSpacing(12)
+        layout.setColumnStretch(1, 1)
 
         model_choice = QComboBox()
         for item in ["Small (S)", "Medium (M)", "Large (L)", "X-Large (XL)"]:
@@ -299,6 +424,7 @@ class StereoMainWindow(QMainWindow):
         self.s2m2_param_widgets["model_choice"] = model_choice
         for key in ["z_far", "conf_thresh", "d_nb", "d_rad"]:
             self.s2m2_param_widgets[key] = QLineEdit()
+            self.s2m2_param_widgets[key].setAlignment(Qt.AlignRight)
         self.s2m2_param_widgets["get_pc"] = QCheckBox("生成点云 .ply")
         self.s2m2_param_widgets["denoise"] = QCheckBox("点云去噪")
 
@@ -310,7 +436,11 @@ class StereoMainWindow(QMainWindow):
             ("去噪半径", "d_rad"),
         ]
         for row, (label_text, key) in enumerate(rows):
-            layout.addWidget(QLabel(label_text), row, 0)
+            label = QLabel(label_text)
+            label.setObjectName("InlineLabel")
+            if key != "model_choice":
+                self.s2m2_param_widgets[key].setPlaceholderText({"z_far": "10.0", "conf_thresh": "0.0", "d_nb": "30", "d_rad": "0.03"}[key])
+            layout.addWidget(label, row, 0)
             layout.addWidget(self.s2m2_param_widgets[key], row, 1)
         row = len(rows)
         layout.addWidget(self.s2m2_param_widgets["get_pc"], row, 0, 1, 2)
@@ -318,15 +448,35 @@ class StereoMainWindow(QMainWindow):
         return page
 
     def _build_action_card(self) -> QWidget:
-        card, layout = self._card_with_layout("执行控制", "先保存配置，再检查服务，最后启动处理任务。")
-        button_row = QHBoxLayout()
-        button_row.setSpacing(10)
+        card, layout = self._card_with_layout("05 执行控制", "主操作只保留开始与停止，其他动作退居二级，整体阅读会轻很多。")
+        summary_row = QHBoxLayout()
+        summary_row.setSpacing(8)
+        self.action_model_chip = QLabel("当前模型 -")
+        self.action_model_chip.setObjectName("SoftPill")
+        self.output_dir_chip = QLabel("输出目录 -")
+        self.output_dir_chip.setObjectName("SoftPill")
+        summary_row.addWidget(self.action_model_chip)
+        summary_row.addWidget(self.output_dir_chip)
+        summary_row.addStretch(1)
+
+        utility_row = QHBoxLayout()
+        utility_row.setSpacing(10)
+        run_row = QHBoxLayout()
+        run_row.setSpacing(10)
 
         self.save_button = QPushButton("保存配置")
         self.check_button = QPushButton("检查服务")
         self.run_button = QPushButton("开始处理")
-        self.stop_button = QPushButton("停止")
+        self.stop_button = QPushButton("停止任务")
         self.open_output_button = QPushButton("打开输出目录")
+        self.save_button.setProperty("variant", "secondary")
+        self.check_button.setProperty("variant", "secondary")
+        self.open_output_button.setProperty("variant", "ghost")
+        self.run_button.setProperty("variant", "primary")
+        self.stop_button.setProperty("variant", "danger")
+        self.run_button.setMinimumHeight(42)
+        self.stop_button.setMinimumHeight(42)
+        self.stop_button.setMinimumWidth(116)
 
         self.save_button.clicked.connect(self.save_current_config)
         self.check_button.clicked.connect(self.check_current_service)
@@ -335,99 +485,145 @@ class StereoMainWindow(QMainWindow):
         self.open_output_button.clicked.connect(self.open_output_dir)
         self.stop_button.setEnabled(False)
 
-        for button in [self.save_button, self.check_button, self.run_button, self.stop_button, self.open_output_button]:
-            button_row.addWidget(button)
+        utility_row.addWidget(self.save_button)
+        utility_row.addWidget(self.check_button)
+        utility_row.addStretch(1)
+        utility_row.addWidget(self.open_output_button)
+
+        run_row.addWidget(self.run_button, stretch=1)
+        run_row.addWidget(self.stop_button)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(False)
         self.progress_hint = QLabel("等待开始")
-        self.progress_hint.setObjectName("HintText")
+        self.progress_hint.setObjectName("ProgressHint")
 
-        layout.addLayout(button_row)
+        layout.addLayout(summary_row)
+        layout.addLayout(utility_row)
+        layout.addLayout(run_row)
         layout.addWidget(self.progress_bar)
         layout.addWidget(self.progress_hint)
         return card
 
     def _build_center_panel(self) -> QWidget:
         splitter = QSplitter(Qt.Vertical)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(10)
 
         preview_card = QFrame()
         preview_card.setObjectName("Card")
         preview_layout = QVBoxLayout(preview_card)
-        preview_layout.setContentsMargins(16, 16, 16, 16)
-        preview_layout.setSpacing(12)
+        preview_layout.setContentsMargins(18, 18, 18, 18)
+        preview_layout.setSpacing(14)
+        header_row = QHBoxLayout()
+        header_row.setSpacing(12)
+        header_text = QVBoxLayout()
+        header_text.setSpacing(4)
         title = QLabel("预览工作台")
         title.setObjectName("CardTitle")
-        subtitle = QLabel("上排关注输入，下排关注输出与辅助结果。")
+        subtitle = QLabel("主画布一次只展示一个关键预览，切换标签即可查看左图、右图、视差结果与辅助产物。")
         subtitle.setObjectName("HintText")
         subtitle.setWordWrap(True)
-        preview_layout.addWidget(title)
-        preview_layout.addWidget(subtitle)
+        header_text.addWidget(title)
+        header_text.addWidget(subtitle)
+        compact_hint = QLabel("单画布优先")
+        compact_hint.setObjectName("SoftPill")
+        header_row.addLayout(header_text, stretch=1)
+        header_row.addWidget(compact_hint, alignment=Qt.AlignTop)
+        preview_layout.addLayout(header_row)
 
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(12)
         self.left_preview = PreviewPane("左图")
         self.right_preview = PreviewPane("右图")
         self.result_preview = PreviewPane("视差可视化")
         self.aux_preview = PreviewPane("辅助结果")
-        grid.addWidget(self.left_preview, 0, 0)
-        grid.addWidget(self.right_preview, 0, 1)
-        grid.addWidget(self.result_preview, 1, 0)
-        grid.addWidget(self.aux_preview, 1, 1)
-        preview_layout.addLayout(grid, stretch=1)
+        self.preview_tabs = QTabWidget()
+        self.preview_tabs.setDocumentMode(True)
+        self.preview_tabs.addTab(self.left_preview, "左图")
+        self.preview_tabs.addTab(self.right_preview, "右图")
+        self.preview_tabs.addTab(self.result_preview, "视差结果")
+        self.preview_tabs.addTab(self.aux_preview, "辅助结果")
+        preview_layout.addWidget(self.preview_tabs, stretch=1)
 
         log_card = QFrame()
         log_card.setObjectName("Card")
         log_layout = QVBoxLayout(log_card)
-        log_layout.setContentsMargins(16, 16, 16, 16)
+        log_layout.setContentsMargins(18, 18, 18, 18)
         log_layout.setSpacing(12)
         log_title = QLabel("运行日志")
         log_title.setObjectName("CardTitle")
+        log_subtitle = QLabel("保留服务连接、推理进度和结果写入信息，排查问题时更顺手。")
+        log_subtitle.setObjectName("HintText")
+        log_subtitle.setWordWrap(True)
         self.log_output = QTextEdit()
+        self.log_output.setObjectName("LogOutput")
         self.log_output.setReadOnly(True)
+        self.log_output.setLineWrapMode(QTextEdit.NoWrap)
         self.log_output.setMinimumHeight(220)
         log_layout.addWidget(log_title)
+        log_layout.addWidget(log_subtitle)
         log_layout.addWidget(self.log_output, stretch=1)
 
         splitter.addWidget(preview_card)
         splitter.addWidget(log_card)
-        splitter.setSizes([640, 260])
+        splitter.setSizes([670, 250])
+        return splitter
+
+    def _build_side_panel(self) -> QWidget:
+        splitter = QSplitter(Qt.Vertical)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(10)
+        splitter.addWidget(self._build_center_panel())
+        splitter.addWidget(self._build_right_panel())
+        splitter.setSizes([580, 360])
         return splitter
 
     def _build_right_panel(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
+        layout.setSpacing(0)
 
-        history_card, history_layout = self._card_with_layout("结果记录", "按最近处理时间倒序展示，可快速回看每次输出。")
+        splitter = QSplitter(Qt.Vertical)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(10)
+
+        history_card, history_layout = self._card_with_layout("结果记录", "按最近处理时间倒序展示，选中后会联动预览、文件和摘要。")
         self.results_list = QListWidget()
+        self.results_list.setSpacing(6)
         self.results_list.itemSelectionChanged.connect(self.on_result_selected)
         history_layout.addWidget(self.results_list)
 
-        file_card, file_layout = self._card_with_layout("输出文件", "查看当前结果包含哪些产物，双击可打开所在位置。")
+        file_card, file_layout = self._card_with_layout("输出文件", "双击条目即可打开所在目录，适合快速定位产物。")
         self.output_files_list = QListWidget()
+        self.output_files_list.setSpacing(6)
         self.output_files_list.itemDoubleClicked.connect(self.open_selected_artifact)
         file_layout.addWidget(self.output_files_list)
 
         meta_card, meta_layout = self._card_with_layout("结果摘要", "记录模型、耗时、参数与路径，便于回查。")
+        self.metadata_title_label = QLabel("当前未选中结果")
+        self.metadata_title_label.setObjectName("InlineLabel")
         self.metadata_view = QTextEdit()
+        self.metadata_view.setObjectName("JsonViewer")
         self.metadata_view.setReadOnly(True)
+        self.metadata_view.setLineWrapMode(QTextEdit.NoWrap)
         self.metadata_view.setMinimumHeight(220)
+        meta_layout.addWidget(self.metadata_title_label)
         meta_layout.addWidget(self.metadata_view)
 
-        layout.addWidget(history_card, stretch=2)
-        layout.addWidget(file_card, stretch=2)
-        layout.addWidget(meta_card, stretch=3)
+        splitter.addWidget(history_card)
+        splitter.addWidget(file_card)
+        splitter.addWidget(meta_card)
+        splitter.setSizes([290, 230, 300])
+        layout.addWidget(splitter, stretch=1)
         return container
 
     def _card_with_layout(self, title: str, subtitle: str) -> tuple[QWidget, QVBoxLayout]:
         card = QFrame()
         card.setObjectName("Card")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
         title_label = QLabel(title)
         title_label.setObjectName("CardTitle")
@@ -450,7 +646,9 @@ class StereoMainWindow(QMainWindow):
         row = QHBoxLayout()
         row.setSpacing(8)
         button = QPushButton("浏览")
+        button.setProperty("variant", "secondary")
         button.setProperty("small", True)
+        button.setMinimumWidth(76)
         button.clicked.connect(browse_handler)
         row.addWidget(line_edit, stretch=1)
         row.addWidget(button)
@@ -460,42 +658,301 @@ class StereoMainWindow(QMainWindow):
     def _apply_styles(self) -> None:
         self.setStyleSheet(
             """
-            QMainWindow, QWidget { background: #eef3f8; color: #17212f; }
-            #HeroCard {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0f5d91, stop:1 #0b3c5d);
-                border-radius: 22px;
+            QMainWindow {
+                background: #edf2f6;
             }
-            #HeroTitle { color: white; font-size: 24px; font-weight: 700; }
-            #HeroSubtitle { color: rgba(255,255,255,0.86); font-size: 13px; }
+            QWidget {
+                color: #1d2733;
+            }
+            #ToolbarCard {
+                background: #fffdfa;
+                border: 1px solid #d8e0e7;
+                border-radius: 24px;
+            }
+            #ToolbarEyebrow {
+                color: #2d6972;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 1px;
+            }
+            #ToolbarTitle {
+                color: #1d2d3a;
+                font-size: 26px;
+                font-weight: 700;
+            }
+            #ToolbarSubtitle {
+                color: #607283;
+                font-size: 13px;
+                line-height: 1.45;
+            }
+            #MetricPill, #SoftPill {
+                background: #eef4f6;
+                color: #3e5565;
+                border: 1px solid #d8e2e8;
+                border-radius: 12px;
+                padding: 6px 10px;
+                font-size: 11px;
+                font-weight: 700;
+            }
+            #StatusLabel {
+                color: #607283;
+                font-size: 11px;
+                font-weight: 700;
+            }
             #StatusChip {
-                background: rgba(255,255,255,0.18); color: white; border-radius: 14px; padding: 7px 14px; font-weight: 700;
+                background: #e8eff2;
+                color: #274750;
+                border: 1px solid #cedae0;
+                border-radius: 14px;
+                padding: 7px 12px;
+                font-weight: 700;
             }
-            #StatusValue { color: rgba(255,255,255,0.88); font-size: 12px; }
-            #Card { background: #fbfdff; border: 1px solid #d8e3ef; border-radius: 18px; }
-            #CardTitle { font-size: 16px; font-weight: 700; color: #17324d; }
-            #FieldLabel { font-size: 12px; font-weight: 600; color: #43607c; margin-top: 4px; }
-            #HintText { font-size: 12px; color: #637a92; }
+            #StatusChip[state="running"] {
+                background: #fff1dd;
+                border-color: #f2d7ab;
+                color: #89561b;
+            }
+            #StatusChip[state="success"] {
+                background: #e7f6ee;
+                border-color: #b9ddc8;
+                color: #1f6641;
+            }
+            #StatusChip[state="error"] {
+                background: #fde8e3;
+                border-color: #efc0b4;
+                color: #8b412c;
+            }
+            #StatusValue {
+                color: #435767;
+                font-size: 12px;
+                line-height: 1.45;
+            }
+            #Card {
+                background: #fffdfa;
+                border: 1px solid #d8e0e7;
+                border-radius: 20px;
+            }
+            #CardTitle { font-size: 17px; font-weight: 700; color: #203142; }
+            #FieldLabel {
+                font-size: 12px;
+                font-weight: 700;
+                color: #4e6273;
+                margin-top: 2px;
+            }
+            #InlineLabel {
+                font-size: 12px;
+                font-weight: 700;
+                color: #4e6273;
+            }
+            #HintText, #PathCaption, #StatusNote, #ProgressHint {
+                font-size: 12px;
+                color: #66798a;
+            }
+            #PathCaption { font-size: 11px; }
             #PreviewSurface {
-                background: #edf3f9; border: 1px dashed #bdd0e2; border-radius: 14px; color: #5d7289; padding: 12px;
+                background: #f7fafc;
+                border: 1px dashed #ccd7e0;
+                border-radius: 16px;
+                color: #627487;
+                padding: 18px;
             }
             QLineEdit, QTextEdit, QComboBox, QListWidget {
-                background: white; border: 1px solid #c8d5e3; border-radius: 12px; padding: 10px 12px; selection-background-color: #0f5d91;
+                background: #ffffff;
+                border: 1px solid #d5dee6;
+                border-radius: 12px;
+                padding: 10px 12px;
+                selection-background-color: #1f7a6a;
+                selection-color: white;
             }
-            QLineEdit:focus, QTextEdit:focus, QComboBox:focus, QListWidget:focus { border: 1px solid #0f5d91; }
+            QTextEdit { padding: 12px; }
+            QLineEdit:hover, QTextEdit:hover, QComboBox:hover, QListWidget:hover { border-color: #adc1cf; }
+            QLineEdit:focus, QTextEdit:focus, QComboBox:focus, QListWidget:focus { border: 1px solid #1f7a6a; }
+            QTextEdit#LogOutput, QTextEdit#JsonViewer {
+                background: #f6f9fb;
+                border: 1px solid #d7e0e7;
+                font-family: "Consolas";
+                font-size: 10pt;
+            }
+            QTabWidget::pane {
+                background: #fffdfa;
+                border: 1px solid #d8e0e7;
+                border-radius: 16px;
+                top: -1px;
+            }
+            QTabBar::tab {
+                background: #edf3f6;
+                color: #4f6474;
+                border: 1px solid #d8e0e7;
+                border-bottom-color: #d8e0e7;
+                border-top-left-radius: 10px;
+                border-top-right-radius: 10px;
+                padding: 8px 14px;
+                margin-right: 6px;
+                font-weight: 700;
+            }
+            QTabBar::tab:selected {
+                background: #fffdfa;
+                color: #203142;
+                border-bottom-color: #fffdfa;
+            }
+            QTabBar::tab:hover:!selected {
+                background: #e4edf2;
+            }
             QPushButton {
-                background: #0f5d91; border: none; color: white; border-radius: 12px; padding: 10px 16px; font-weight: 600;
+                background: #e9eef1;
+                border: 1px solid transparent;
+                color: #314252;
+                border-radius: 12px;
+                padding: 10px 16px;
+                font-weight: 700;
             }
-            QPushButton:hover { background: #0c4e79; }
-            QPushButton[small="true"] { padding: 8px 12px; border-radius: 10px; }
-            QPushButton:disabled { background: #9cb3c7; color: #edf3f8; }
-            QCheckBox { spacing: 8px; color: #2c4359; }
+            QPushButton[variant="primary"] {
+                background: #1f7a6a;
+                border-color: #1f7a6a;
+                color: white;
+            }
+            QPushButton[variant="primary"]:hover {
+                background: #186558;
+                border-color: #186558;
+            }
+            QPushButton[variant="secondary"] {
+                background: #eef4f6;
+                border-color: #d2dee4;
+                color: #2d4954;
+            }
+            QPushButton[variant="secondary"]:hover {
+                background: #e3edf1;
+                border-color: #c1d2da;
+            }
+            QPushButton[variant="ghost"] {
+                background: #fffdfa;
+                border-color: #d5dee6;
+                color: #445464;
+            }
+            QPushButton[variant="ghost"]:hover {
+                background: #f4f8fa;
+                border-color: #c5d5de;
+            }
+            QPushButton[variant="danger"] {
+                background: #b85e3f;
+                border-color: #b85e3f;
+                color: white;
+            }
+            QPushButton[variant="danger"]:hover {
+                background: #a75135;
+                border-color: #a75135;
+            }
+            QPushButton[small="true"] { padding: 9px 14px; border-radius: 11px; }
+            QPushButton:disabled {
+                background: #cbc2b7;
+                border-color: #cbc2b7;
+                color: #faf7f2;
+            }
+            QCheckBox { spacing: 8px; color: #2e3d4b; padding: 2px 0; }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 6px;
+                border: 1px solid #b7c5d0;
+                background: #ffffff;
+            }
+            QCheckBox::indicator:checked {
+                background: #1f7a6a;
+                border-color: #1f7a6a;
+            }
             QProgressBar {
-                background: #e6eef6; border: none; border-radius: 10px; min-height: 16px; text-align: center;
+                background: #e5ecf1;
+                border: none;
+                border-radius: 11px;
+                min-height: 18px;
+                text-align: center;
             }
-            QProgressBar::chunk { background: #2f8f68; border-radius: 10px; }
+            QProgressBar::chunk { background: #2e8d68; border-radius: 11px; }
+            QListWidget {
+                padding: 8px;
+                outline: 0;
+            }
+            QListWidget::item {
+                border-radius: 10px;
+                padding: 10px 12px;
+                margin: 2px 0;
+            }
+            QListWidget::item:selected {
+                background: #e1eee9;
+                color: #163d35;
+                border: 1px solid #a9cdbe;
+            }
+            QListWidget::item:hover:!selected { background: #eff4f7; }
+            QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget { background: transparent; }
+            QScrollBar:vertical {
+                background: transparent;
+                width: 10px;
+                margin: 4px 0 4px 0;
+            }
+            QScrollBar::handle:vertical {
+                background: #c4d0d9;
+                border-radius: 5px;
+                min-height: 28px;
+            }
+            QScrollBar::handle:vertical:hover { background: #afbfca; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical,
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal,
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+                background: none;
+                border: none;
+            }
             QSplitter::handle { background: transparent; }
+            QSplitter::handle:hover {
+                background: rgba(66, 95, 112, 0.08);
+                border-radius: 4px;
+            }
             """
         )
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        self._update_responsive_layout()
+
+    def _update_responsive_layout(self, force: bool = False) -> None:
+        if not hasattr(self, "main_splitter"):
+            return
+        compact_window = self.width() < 1360
+        if not force and compact_window == self._compact_window:
+            return
+        self._compact_window = compact_window
+        orientation = Qt.Vertical if compact_window else Qt.Horizontal
+        self.main_splitter.setOrientation(orientation)
+        if compact_window:
+            self.main_splitter.setSizes([int(self.height() * 0.56), int(self.height() * 0.44)])
+            return
+        self.main_splitter.setSizes([int(self.width() * 0.62), int(self.width() * 0.38)])
+
+    def _set_status(self, state: str, chip_text: str, detail: str) -> None:
+        state_map = {
+            "ready": "ready",
+            "running": "running",
+            "success": "success",
+            "error": "error",
+        }
+        self.status_chip.setText(chip_text)
+        self.status_chip.setProperty("state", state_map.get(state, "ready"))
+        self.status_chip.style().unpolish(self.status_chip)
+        self.status_chip.style().polish(self.status_chip)
+        self.status_chip.update()
+        self.status_value.setText(detail)
+
+    def _sync_summary_chips(self) -> None:
+        if not hasattr(self, "model_combo"):
+            return
+        model_text = self.model_combo.currentText().replace(" Stereo Matching", "")
+        output_dir = self.output_dir_edit.text().strip() or self.config["paths"]["output_dir"]
+        output_name = Path(output_dir).name or output_dir
+        record_count = len(self.result_records)
+        self.model_summary_chip.setText(f"模型 {model_text}")
+        self.result_count_chip.setText(f"记录 {record_count}")
+        self.action_model_chip.setText(f"当前模型 {self.model_combo.currentText()}")
+        self.output_dir_chip.setText(f"输出目录 {output_name}")
 
     def load_config_to_widgets(self) -> None:
         config = self.config
@@ -531,6 +988,7 @@ class StereoMainWindow(QMainWindow):
         self.s2m2_param_widgets["get_pc"].setChecked(bool(s2m2["get_pc"]))
         self.s2m2_param_widgets["denoise"].setChecked(bool(s2m2["denoise"]))
         self.on_model_changed()
+        self._sync_summary_chips()
 
     def collect_form_data(self) -> dict:
         config = load_config()
@@ -582,6 +1040,7 @@ class StereoMainWindow(QMainWindow):
             if model_key == "fs"
             else "当前接口：/get_status + /run_s2m2_pipeline"
         )
+        self._sync_summary_chips()
 
     def refresh_live_preview(self) -> None:
         left_path = self.left_image_edit.text().strip()
@@ -620,8 +1079,7 @@ class StereoMainWindow(QMainWindow):
         self.progress_hint.setText("模型处理中...")
         self.run_button.setEnabled(False)
         self.stop_button.setEnabled(True)
-        self.status_chip.setText("运行中")
-        self.status_value.setText("正在调用模型服务")
+        self._set_status("running", "运行中", "正在调用模型服务")
         self.worker.start()
 
     def stop_processing(self) -> None:
@@ -629,12 +1087,12 @@ class StereoMainWindow(QMainWindow):
             self.worker.stop()
             self.append_log("已请求停止，等待当前网络请求结束...")
             self.stop_button.setEnabled(False)
+            self._set_status("running", "停止中", "等待当前请求安全结束")
 
     def on_processing_finished(self, success: bool, message: str, metadata) -> None:
         self.run_button.setEnabled(True)
         self.stop_button.setEnabled(False)
-        self.status_chip.setText("完成" if success else "失败")
-        self.status_value.setText(message)
+        self._set_status("success" if success else "error", "完成" if success else "失败", message)
         self.progress_hint.setText(message)
         self.append_log(message)
 
@@ -649,7 +1107,7 @@ class StereoMainWindow(QMainWindow):
     def update_stage(self, stage: str, sample_name: str) -> None:
         stage_map = {"connecting": "连接服务", "running": "执行推理", "finished": "写入结果"}
         text = stage_map.get(stage, stage)
-        self.status_value.setText(f"{text} · {sample_name}")
+        self._set_status("running", "运行中", f"{text} · {sample_name}")
         self.append_log(f"[阶段] {text} - {sample_name}")
 
     def update_progress(self, current: int, total: int) -> None:
@@ -665,6 +1123,7 @@ class StereoMainWindow(QMainWindow):
         output_dir = self.output_dir_edit.text().strip() or self.config["paths"]["output_dir"]
         self.result_records = list_saved_results(output_dir)
         self.results_list.clear()
+        self._sync_summary_chips()
 
         selected_item = None
         for record in self.result_records:
@@ -676,6 +1135,7 @@ class StereoMainWindow(QMainWindow):
                 selected_item = item
 
         if self.results_list.count() == 0:
+            self.metadata_title_label.setText("当前未选中结果")
             self.metadata_view.setPlainText("暂无处理结果。")
             self.output_files_list.clear()
             self.result_preview.set_empty("暂无结果", "运行一次任务后，这里会显示视差结果。")
@@ -695,13 +1155,18 @@ class StereoMainWindow(QMainWindow):
         self.current_record = record
         outputs = record.get("outputs", {})
         inputs = record.get("inputs", {})
+        self.metadata_title_label.setText(f"当前记录：{record.get('sample_name', 'unknown')} · {record.get('model', '').upper()}")
 
         left_path = inputs.get("left_image", "")
         right_path = inputs.get("right_image", "")
         if left_path and Path(left_path).exists():
             self.left_preview.set_image(left_path, left_path)
+        else:
+            self.left_preview.set_empty("缺少左图", "当前记录没有可显示的左图输入。")
         if right_path and Path(right_path).exists():
             self.right_preview.set_image(right_path, right_path)
+        else:
+            self.right_preview.set_empty("缺少右图", "当前记录没有可显示的右图输入。")
 
         disp_vis = outputs.get("disp_vis", "")
         if disp_vis and Path(disp_vis).exists():
@@ -762,9 +1227,11 @@ class StereoMainWindow(QMainWindow):
             status_text, timer_text = client.get_status(model_key)
             self.service_status_label.setText(f"服务正常：{status_text} | {timer_text}")
             self.append_log(f"服务检查成功：{server_url}")
+            self._set_status("ready", "就绪", "服务检查成功")
         except Exception as exc:  # noqa: BLE001
             self.service_status_label.setText(f"服务检查失败：{exc}")
             self.append_log(f"服务检查失败：{server_url} -> {exc}")
+            self._set_status("error", "异常", "服务检查失败")
 
     def select_input_dir(self) -> None:
         current = self.input_dir_edit.text().strip() or str(BASE_DIR / "input")
@@ -777,6 +1244,7 @@ class StereoMainWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "选择输出目录", current)
         if folder:
             self.output_dir_edit.setText(folder)
+            self._sync_summary_chips()
             self.refresh_results()
 
     def select_left_image(self) -> None:
