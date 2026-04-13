@@ -782,36 +782,28 @@ class StereoMainWindow(QMainWindow):
                 background: #f9fbfc;
                 border: 1px solid #d8e0e7;
                 border-radius: 18px;
-                top: -1px;
-                margin-top: -1px;
+                top: 0px;
+                margin-top: 10px;
                 padding: 10px 10px 8px 10px;
             }
             QTabBar {
                 background: transparent;
-                left: 6px;
+                left: 0px;
             }
             QTabBar::tab {
                 background: #eef3f6;
                 color: #4f6474;
                 border: 1px solid #d8e0e7;
-                border-bottom: none;
-                border-top-left-radius: 12px;
-                border-top-right-radius: 12px;
-                padding: 9px 16px 10px 16px;
-                margin-right: 4px;
+                border-radius: 12px;
+                padding: 9px 16px;
+                margin-right: 8px;
                 margin-bottom: 0px;
                 font-weight: 700;
             }
             QTabBar::tab:selected {
-                background: #f9fbfc;
+                background: #ffffff;
                 color: #203142;
-                border-color: #d8e0e7;
-                margin-bottom: -1px;
-                padding-bottom: 11px;
-                z-index: 2;
-            }
-            QTabBar::tab:!selected {
-                margin-top: 4px;
+                border-color: #cfdbe3;
             }
             QTabBar::tab:hover:!selected {
                 background: #e6edf1;
