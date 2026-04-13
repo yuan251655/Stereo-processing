@@ -13,6 +13,7 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 @dataclass
 class OutputLayout:
     base_output: Path
+    cache_dir: Path
     disparity_vis_dir: Path
     disparity_png_dir: Path
     disparity_npy_dir: Path
@@ -29,10 +30,8 @@ def ensure_runtime_dirs(input_dir: str | Path, output_dir: str | Path) -> tuple[
 
     for path in [
         input_path,
-        input_path / "left",
-        input_path / "right",
-        input_path / "pairs",
         output_path,
+        output_path / "_cache",
         output_path / "disparity_vis",
         output_path / "disparity_png",
         output_path / "disparity_npy",
@@ -46,6 +45,7 @@ def ensure_runtime_dirs(input_dir: str | Path, output_dir: str | Path) -> tuple[
 
     layout = OutputLayout(
         base_output=output_path,
+        cache_dir=output_path / "_cache",
         disparity_vis_dir=output_path / "disparity_vis",
         disparity_png_dir=output_path / "disparity_png",
         disparity_npy_dir=output_path / "disparity_npy",
@@ -59,19 +59,19 @@ def ensure_runtime_dirs(input_dir: str | Path, output_dir: str | Path) -> tuple[
 
 
 def copy_input_pair(
-    input_dir: str | Path,
+    cache_dir: str | Path,
     sample_name: str,
     left_image: str | Path,
     right_image: str | Path,
     source_image: str | Path | None = None,
 ) -> dict:
-    input_path = Path(input_dir)
+    cache_path = Path(cache_dir)
     left_src = Path(left_image)
     right_src = Path(right_image)
 
-    left_target = input_path / "left" / f"{sample_name}{left_src.suffix.lower()}"
-    right_target = input_path / "right" / f"{sample_name}{right_src.suffix.lower()}"
-    pair_manifest = input_path / "pairs" / f"{sample_name}.json"
+    left_target = cache_path / f"{sample_name}_left{left_src.suffix.lower()}"
+    right_target = cache_path / f"{sample_name}_right{right_src.suffix.lower()}"
+    pair_manifest = cache_path / f"{sample_name}_pair.json"
 
     shutil.copy2(left_src, left_target)
     shutil.copy2(right_src, right_target)

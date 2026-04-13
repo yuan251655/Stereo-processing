@@ -89,7 +89,7 @@ class PipelineRunner:
         success_samples: list[str] = []
         failure_messages: list[str] = []
         last_metadata = None
-        cache_dir = input_root / "_cache"
+        cache_dir = output_layout.cache_dir
 
         for index, image_path in enumerate(raw_images, start=1):
             sample_name = image_path.stem or datetime.now().strftime("sample_%Y%m%d_%H%M%S")
@@ -127,7 +127,7 @@ class PipelineRunner:
                     sample_name,
                 )
                 copied_inputs = copy_input_pair(
-                    input_root,
+                    cache_dir,
                     sample_name,
                     left_image,
                     right_image,
