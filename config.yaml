@@ -1,18 +1,18 @@
 paths:
-  input_dir: E:/codex/projects/Stereo-processing/input
-  output_dir: E:/codex/projects/Stereo-processing/output
+  input_dir: E:/部门工作/无人车双目阵列/data/4.19_tj_小麦
+  output_dir: E:/部门工作/无人车双目阵列/output/4.15/tj
 servers:
   preprocess: http://192.168.30.237:8002
   fs: http://192.168.30.237:8000
   s2m2: http://192.168.30.237:8001
-model_selection: fs
+model_selection: s2m2
 session:
   sample_name: sample_001
-  left_image: ""
-  right_image: ""
-  intrinsic_text: |-
-    754.66 0.0 489.37 0.0 754.66 265.16 0.0 0.0 1.0
-    0.063
+  left_image: ''
+  right_image: ''
+  intrinsic_text: '754.66 0.0 489.37 0.0 754.66 265.16 0.0 0.0 1.0
+
+    0.063'
   save_input_copy: true
 fs_params:
   scale: 1.0
