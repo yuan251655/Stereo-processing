@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+import re
 import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-import re
 from time import perf_counter
 
-from .file_store import IMAGE_SUFFIXES, copy_input_pair, ensure_runtime_dirs
+from .file_store import IMAGE_SUFFIXES, copy_input_pair, ensure_runtime_dirs, write_run_summary
 from .stereo_api import StereoApiClient, StereoApiError
 
 
@@ -49,12 +49,10 @@ class PipelineRunner:
         if "_" in sample_name:
             add(sample_name.split("_")[0])
 
-        # 优先提取类似 ClearDCL00003 这样的“相机名+编号”前缀。
         match = re.match(r"([A-Za-z][A-Za-z0-9]*\d+)", sample_name)
         if match:
             add(match.group(1))
 
-        # 去掉常见的日期时间尾巴：xxx_20260409_174455_948 -> xxx
         trimmed = re.sub(r"_\d{8}(?:_\d{4,6})?(?:_\d+)?$", "", sample_name)
         if trimmed != sample_name:
             add(trimmed)
@@ -62,6 +60,16 @@ class PipelineRunner:
                 add(trimmed.split("_")[0])
 
         return candidates
+
+    def _collect_raw_images(self, input_root: Path) -> list[Path]:
+        selected_files = self.config.get("selected_files") or []
+        if selected_files:
+            return [
+                Path(file_path)
+                for file_path in selected_files
+                if Path(file_path).is_file() and Path(file_path).suffix.lower() in IMAGE_SUFFIXES
+            ]
+        return sorted(path for path in input_root.iterdir() if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES)
 
     def _run_once(self) -> TaskResult:
         model_key = str(self.config.get("model_selection", "fs")).strip().lower()
@@ -73,9 +81,9 @@ class PipelineRunner:
         )
         input_root, output_layout = ensure_runtime_dirs(input_dir, output_dir, run_name)
         preprocess_url = self.config["servers"]["preprocess"]
-        raw_images = sorted(path for path in input_root.iterdir() if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES)
+        raw_images = self._collect_raw_images(input_root)
         if not raw_images:
-            raise FileNotFoundError(f"输入目录中没有可处理的图片：{input_root}")
+            raise FileNotFoundError(f"输入目录中没有可处理的图像：{input_root}")
 
         preprocess_client = StereoApiClient(preprocess_url)
         server_url = self.config["servers"][model_key]
@@ -92,6 +100,7 @@ class PipelineRunner:
 
         success_samples: list[str] = []
         failure_messages: list[str] = []
+        failure_samples: list[dict] = []
         last_metadata = None
         cache_dir = output_layout.cache_dir
 
@@ -99,7 +108,31 @@ class PipelineRunner:
             sample_name = image_path.stem or datetime.now().strftime("sample_%Y%m%d_%H%M%S")
 
             if self.stop_flag():
-                return TaskResult(False, f"任务已取消，已处理 {index - 1}/{total} 个样本。", last_metadata)
+                cancel_message = f"任务已取消，已处理 {index - 1}/{total} 个样本。"
+                summary_path = self._write_run_summary(
+                    output_layout=output_layout,
+                    run_name=run_name,
+                    input_root=input_root,
+                    total=total,
+                    model_key=model_key,
+                    server_url=server_url,
+                    preprocess_url=preprocess_url,
+                    raw_images=raw_images,
+                    success_samples=success_samples,
+                    failure_samples=failure_samples,
+                    stopped=True,
+                )
+                return TaskResult(
+                    False,
+                    cancel_message,
+                    {
+                        "run_name": run_name,
+                        "run_dir": str(output_layout.run_output),
+                        "summary_path": str(summary_path),
+                        "failure_count": len(failure_samples),
+                        "failed_samples": failure_samples,
+                    },
+                )
 
             try:
                 self.logger(f"[{index}/{total}] 开始处理样本：{sample_name}")
@@ -121,7 +154,7 @@ class PipelineRunner:
                     tried = "、".join(query_candidates)
                     raise StereoApiError(
                         f"未找到相机参数。已尝试 Key: {tried}"
-                        + (f" | 最后一次返回: {last_query_error}" if last_query_error else "")
+                        + (f" | 最后一次返回：{last_query_error}" if last_query_error else "")
                     )
 
                 left_image, right_image, intrinsic_text = preprocess_client.preprocess_image(
@@ -181,26 +214,107 @@ class PipelineRunner:
                     "intrinsic_text": intrinsic_text,
                     "parameters": params,
                     "outputs": saved_outputs,
+                    "metadata_path": "",
                 }
-                metadata["metadata_path"] = ""
                 last_metadata = metadata
                 success_samples.append(sample_name)
                 self.status_callback("finished", sample_name)
                 self.logger(f"[{sample_name}] 处理完成，耗时 {elapsed} 秒")
                 self.logger(f"[{sample_name}] 输出目录：{output_layout.run_output}")
             except Exception as exc:  # noqa: BLE001
+                failure_samples.append(
+                    {
+                        "sample_name": sample_name,
+                        "source_image": str(image_path),
+                        "error": str(exc),
+                    }
+                )
                 failure_messages.append(f"{sample_name}: {exc}")
                 self.logger(f"[{sample_name}] 处理失败：{exc}")
 
             self.progress_callback(index, total)
 
+        summary_path = self._write_run_summary(
+            output_layout=output_layout,
+            run_name=run_name,
+            input_root=input_root,
+            total=total,
+            model_key=model_key,
+            server_url=server_url,
+            preprocess_url=preprocess_url,
+            raw_images=raw_images,
+            success_samples=success_samples,
+            failure_samples=failure_samples,
+            stopped=False,
+        )
+
         if not success_samples:
             detail = failure_messages[-1] if failure_messages else "未生成任何结果。"
-            return TaskResult(False, f"批处理失败：{detail}")
+            return TaskResult(
+                False,
+                f"批处理失败：{detail}",
+                {
+                    "run_name": run_name,
+                    "run_dir": str(output_layout.run_output),
+                    "summary_path": str(summary_path),
+                    "failure_count": len(failure_samples),
+                    "failed_samples": failure_samples,
+                },
+            )
 
         summary = f"处理完成：成功 {len(success_samples)}/{total}"
         if failure_messages:
             summary += f"，失败 {len(failure_messages)}"
             self.logger("失败样本：" + "；".join(failure_messages))
         self.logger(f"本轮输出目录：{output_layout.run_output}")
-        return TaskResult(True, summary, last_metadata)
+
+        result_metadata = dict(last_metadata or {})
+        result_metadata.update(
+            {
+                "run_name": run_name,
+                "run_dir": str(output_layout.run_output),
+                "summary_path": str(summary_path),
+                "failure_count": len(failure_samples),
+                "failed_samples": failure_samples,
+            }
+        )
+        return TaskResult(True, summary, result_metadata)
+
+    @staticmethod
+    def _write_run_summary(
+        *,
+        output_layout,
+        run_name: str,
+        input_root: Path,
+        total: int,
+        model_key: str,
+        server_url: str,
+        preprocess_url: str,
+        raw_images: list[Path],
+        success_samples: list[str],
+        failure_samples: list[dict],
+        stopped: bool,
+    ) -> Path:
+        run_summary = {
+            "run_name": run_name,
+            "run_dir": str(output_layout.run_output),
+            "input_dir": str(input_root),
+            "output_dir": str(output_layout.base_output),
+            "model": model_key,
+            "server_url": server_url,
+            "preprocess_url": preprocess_url,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "total_samples": total,
+            "success_count": len(success_samples),
+            "failure_count": len(failure_samples),
+            "stopped": stopped,
+            "success_samples": success_samples,
+            "failed_samples": failure_samples,
+            "selected_files": [str(path) for path in raw_images],
+            "retryable_failed_files": [
+                item["source_image"]
+                for item in failure_samples
+                if str(item.get("source_image", "")).strip()
+            ],
+        }
+        return write_run_summary(output_layout.run_output, run_summary)

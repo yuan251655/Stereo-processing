@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from src.app_config import ensure_default_config, load_config, save_config
-from src.file_store import list_saved_results
+from src.file_store import list_saved_results, load_latest_run_summary
 from src.pipeline_runner import PipelineRunner
 from src.stereo_api import StereoApiClient
 
@@ -190,6 +190,8 @@ class StereoMainWindow(QMainWindow):
         self.worker = None
         self.result_records = []
         self.current_record = None
+        self.latest_run_summary = None
+        self.retry_failed_files = []
         self._compact_window = None
 
         self.setWindowTitle("Stereo Processing Workbench")
@@ -443,22 +445,27 @@ class StereoMainWindow(QMainWindow):
         self.save_button = QPushButton("保存配置")
         self.check_button = QPushButton("检查服务")
         self.run_button = QPushButton("开始处理")
+        self.retry_failed_button = QPushButton("重运行失败数据")
         self.stop_button = QPushButton("停止任务")
         self.open_output_button = QPushButton("打开输出目录")
         self.save_button.setProperty("variant", "secondary")
         self.check_button.setProperty("variant", "secondary")
+        self.retry_failed_button.setProperty("variant", "secondary")
         self.open_output_button.setProperty("variant", "ghost")
         self.run_button.setProperty("variant", "primary")
         self.stop_button.setProperty("variant", "danger")
         self.run_button.setMinimumHeight(42)
+        self.retry_failed_button.setMinimumHeight(42)
         self.stop_button.setMinimumHeight(42)
         self.stop_button.setMinimumWidth(116)
 
         self.save_button.clicked.connect(self.save_current_config)
         self.check_button.clicked.connect(self.check_current_service)
         self.run_button.clicked.connect(self.start_processing)
+        self.retry_failed_button.clicked.connect(self.retry_failed_processing)
         self.stop_button.clicked.connect(self.stop_processing)
         self.open_output_button.clicked.connect(self.open_output_dir)
+        self.retry_failed_button.setEnabled(False)
         self.stop_button.setEnabled(False)
 
         utility_row.addWidget(self.save_button)
@@ -467,6 +474,7 @@ class StereoMainWindow(QMainWindow):
         utility_row.addWidget(self.open_output_button)
 
         run_row.addWidget(self.run_button, stretch=1)
+        run_row.addWidget(self.retry_failed_button, stretch=1)
         run_row.addWidget(self.stop_button)
 
         self.progress_bar = QProgressBar()
@@ -1003,6 +1011,23 @@ class StereoMainWindow(QMainWindow):
         }
         return config
 
+    def _load_retry_candidates(self) -> None:
+        output_dir = self.output_dir_edit.text().strip() or self.config["paths"]["output_dir"]
+        self.latest_run_summary = load_latest_run_summary(output_dir)
+        self.retry_failed_files = []
+        if self.latest_run_summary:
+            candidates = self.latest_run_summary.get("retryable_failed_files") or []
+            self.retry_failed_files = [path for path in candidates if Path(path).is_file()]
+        self._update_retry_button()
+
+    def _update_retry_button(self) -> None:
+        if not hasattr(self, "retry_failed_button"):
+            return
+        count = len(self.retry_failed_files)
+        self.retry_failed_button.setText(f"重运行失败数据 ({count})")
+        can_retry = count > 0 and not (self.worker and self.worker.isRunning())
+        self.retry_failed_button.setEnabled(can_retry)
+
     def save_current_config(self) -> None:
         try:
             self.config = self.collect_form_data()
@@ -1028,6 +1053,12 @@ class StereoMainWindow(QMainWindow):
         self.aux_preview.set_empty("等待处理结果", "这里会显示辅助结果或点云文件提示。")
 
     def start_processing(self) -> None:
+        self._start_processing_with_config(retry_failed_only=False)
+
+    def retry_failed_processing(self) -> None:
+        self._start_processing_with_config(retry_failed_only=True)
+
+    def _start_processing_with_config(self, retry_failed_only: bool) -> None:
         try:
             self.config = self.collect_form_data()
             save_config(self.config)
@@ -1039,28 +1070,48 @@ class StereoMainWindow(QMainWindow):
             QMessageBox.information(self, "任务进行中", "当前已有任务在运行，请先等待完成。")
             return
 
-        input_dir = Path(self.input_dir_edit.text().strip())
-        if not input_dir.exists():
-            QMessageBox.warning(self, "无法开始", "输入目录不存在。")
-            return
-        image_count = len([path for path in input_dir.iterdir() if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}])
-        if image_count == 0:
-            QMessageBox.warning(self, "无法开始", "输入目录中没有可处理的原始图像。")
-            return
+        run_config = dict(self.config)
+        if retry_failed_only:
+            self._load_retry_candidates()
+            if not self.retry_failed_files:
+                QMessageBox.information(self, "没有可重跑数据", "最近一轮任务没有可直接重跑的失败样本。")
+                return
+            run_config["selected_files"] = list(self.retry_failed_files)
+            image_count = len(self.retry_failed_files)
+        else:
+            input_dir = Path(self.input_dir_edit.text().strip())
+            if not input_dir.exists():
+                QMessageBox.warning(self, "无法开始", "输入目录不存在。")
+                return
+            image_count = len(
+                [
+                    path
+                    for path in input_dir.iterdir()
+                    if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
+                ]
+            )
+            if image_count == 0:
+                QMessageBox.warning(self, "无法开始", "输入目录中没有可处理的原始图像。")
+                return
 
-        self.worker = PipelineThread(self.config, self)
+        self.worker = PipelineThread(run_config, self)
         self.worker.log_signal.connect(self.append_log)
         self.worker.stage_signal.connect(self.update_stage)
         self.worker.progress_signal.connect(self.update_progress)
         self.worker.completed_signal.connect(self.on_processing_finished)
 
         self.log_output.clear()
-        self.append_log("开始批量处理任务...")
-        self.append_log(f"输入目录样本数：{image_count}")
+        if retry_failed_only:
+            self.append_log("开始重运行失败样本...")
+            self.append_log(f"待重跑失败样本数：{image_count}")
+        else:
+            self.append_log("开始批量处理任务...")
+            self.append_log(f"输入目录样本数：{image_count}")
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(0)
-        self.progress_hint.setText("批量处理中...")
+        self.progress_hint.setText("重跑失败样本中..." if retry_failed_only else "批量处理中...")
         self.run_button.setEnabled(False)
+        self.retry_failed_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self._set_status("running", "运行中", "正在调用模型服务")
         self.worker.start()
@@ -1078,6 +1129,9 @@ class StereoMainWindow(QMainWindow):
         self._set_status("success" if success else "error", "完成" if success else "失败", message)
         self.progress_hint.setText(message)
         self.append_log(message)
+        self._load_retry_candidates()
+        if metadata and metadata.get("failure_count"):
+            self.append_log(f"本轮失败样本已整理，可点击“重运行失败数据”自动重跑 {metadata['failure_count']} 个样本。")
 
         if success and metadata:
             self.refresh_results(select_sample=metadata.get("sample_name"))
@@ -1105,6 +1159,7 @@ class StereoMainWindow(QMainWindow):
     def refresh_results(self, select_sample: str | None = None) -> None:
         output_dir = self.output_dir_edit.text().strip() or self.config["paths"]["output_dir"]
         self.result_records = list_saved_results(output_dir)
+        self._load_retry_candidates()
         self.results_list.clear()
         self._sync_summary_chips()
 

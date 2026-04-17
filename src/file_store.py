@@ -88,6 +88,29 @@ def write_metadata(metadata_dir: Path, sample_name: str, payload: dict) -> Path:
     return metadata_path
 
 
+def write_run_summary(run_dir: Path, payload: dict) -> Path:
+    summary_path = run_dir / "run_summary.json"
+    summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return summary_path
+
+
+def load_latest_run_summary(output_dir: str | Path) -> dict | None:
+    output_root = Path(output_dir)
+    if not output_root.exists():
+        return None
+
+    run_dirs = [path for path in output_root.iterdir() if path.is_dir()]
+    for run_dir in sorted(run_dirs, key=lambda item: item.stat().st_mtime, reverse=True):
+        summary_path = run_dir / "run_summary.json"
+        if not summary_path.exists():
+            continue
+        try:
+            return json.loads(summary_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
 def list_saved_results(output_dir: str | Path) -> list[dict]:
     output_root = Path(output_dir)
     if not output_root.exists():
